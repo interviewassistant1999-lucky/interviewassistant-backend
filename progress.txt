@@ -1,0 +1,127 @@
+# Ralph Progress Log - Interview Assistant MVP
+
+Branch: ralph/interview-assistant-mvp
+Started: 2025-01-26
+
+---
+
+## Codebase Patterns
+
+### Architecture
+- **Backend**: Python FastAPI with WebSocket relay to LLM providers
+- **Frontend**: Next.js 14 with Zustand for state management
+- **Communication**: WebSocket for real-time audio streaming and message passing
+
+### LLM Provider Pattern
+- All LLM clients must implement the same interface: `connect()`, `send_audio()`, `receive_messages()`, `disconnect()`, `is_connected`
+- Use `get_llm_client(provider)` factory function in `backend/services/openai_relay.py` to get the appropriate client
+- Provider selection can come from: (1) frontend UI, (2) environment variable `LLM_PROVIDER`, (3) legacy `USE_MOCK_OPENAI` flag
+- Message types for provider responses: `conversation.item.input_audio_transcription.completed` (transcription), `response.text.done` (suggestions)
+
+### Gemini-Specific Patterns
+- **Model names**: Use short names like `gemini-2.5-flash`, `gemini-2.0-flash` (not `models/gemini-...`)
+- **Available models** (as of Jan 2025): `gemini-2.5-flash`, `gemini-2.0-flash`, `gemini-2.0-flash-lite`, `gemini-flash-latest`, `gemini-pro-latest`
+- **Rate limits**: Free tier has strict per-minute/per-day quotas. Handle 429 errors gracefully with fallback suggestions
+- **Audio transcription**: Gemini supports audio via multimodal API. Convert PCM16 to WAV using `pcm16_to_wav()`, then use `protos.Part(inline_data=protos.Blob(mime_type="audio/wav", data=wav_bytes))`
+- **Single API call optimization**: Combine transcription + suggestion in ONE API call to reduce latency. Use structured prompt with `TRANSCRIPT:`, `IS_QUESTION:`, `SUGGESTION:` format
+- **SDK deprecation**: `google.generativeai` package is deprecated; future work should migrate to `google.genai`
+
+### Configuration Pattern
+- Backend config uses pydantic-settings (`backend/config.py`) with `.env` file
+- Frontend config uses Next.js env vars (`NEXT_PUBLIC_*` prefix)
+- Always provide `.env.example` templates when adding new env vars
+
+### State Management Pattern
+- Frontend uses Zustand store (`frontend/stores/sessionStore.ts`)
+- Add new state fields to `SessionState` interface with corresponding setter actions
+- Types defined in `frontend/types/index.ts`
+
+### Component Pattern
+- Settings components go in `frontend/components/Settings/`
+- Follow existing pattern: use `useSessionStore` hook, radio/checkbox inputs with styled labels
+- Include helpful contextual info (badges, links) for user guidance
+
+---
+
+## Story Progress
+
+## 2025-01-27 - Feature: Multi-Provider LLM Support (Gemini Integration)
+- **What was implemented**: Added Gemini as an alternative LLM provider alongside OpenAI, allowing users to switch between providers in the UI
+- **Files changed**:
+  - `backend/config.py` - Added `llm_provider`, `gemini_api_key` settings
+  - `backend/services/gemini_client.py` - **New file** - Gemini client implementation
+  - `backend/services/openai_relay.py` - Added `get_llm_client()` factory function
+  - `backend/routers/websocket.py` - Updated to accept provider from client
+  - `backend/requirements.txt` - Added `google-generativeai==0.8.3`
+  - `backend/.env` and `.env.example` - Added Gemini config options
+  - `frontend/types/index.ts` - Added `LLMProvider` type
+  - `frontend/stores/sessionStore.ts` - Added `provider` state
+  - `frontend/components/Settings/ProviderSelector.tsx` - **New file** - Provider selection UI
+  - `frontend/app/page.tsx` - Integrated ProviderSelector
+- **Learnings for future iterations:**
+  - All LLM clients must implement the same interface for the factory pattern to work
+  - Gemini uses `google-generativeai` SDK, not a WebSocket API like OpenAI Realtime
+  - Default provider is set in `sessionStore.ts` (currently `'gemini'` for free tier access)
+  - Provider is sent with `session.start` message from frontend to backend
+  - The `effective_provider` property in config.py handles backwards compatibility with legacy `USE_MOCK_OPENAI` flag
+  - Gemini 1.5 Flash model is used for free tier availability
+---
+
+## 2025-01-27 - Bugfix: Gemini Model Name and Rate Limit Handling
+- **What was implemented**: Fixed "404 model not found" error and added rate limit handling
+- **Root cause**: Model name `gemini-1.5-flash` was outdated; API now requires newer model names
+- **Files changed**:
+  - `backend/services/gemini_client.py` - Updated model names, added fallback chain, improved error handling
+- **Learnings for future iterations:**
+  - Gemini model names change frequently. Current working models: `gemini-2.5-flash`, `gemini-2.0-flash`, `gemini-2.0-flash-lite`
+  - Always implement a model fallback chain to try multiple models
+  - 429 rate limit errors are common on free tier - handle gracefully with fallback suggestions
+  - Use `genai.list_models()` to check available models if encountering 404 errors
+  - The `google.generativeai` SDK is deprecated; future iterations should migrate to `google.genai`
+---
+
+## 2025-01-27 - Bugfix: Audio Capture Not Working
+- **What was implemented**: Fixed audio level meters not updating and system audio not being captured
+- **Root causes**:
+  1. AudioWorklet processor was reading from wrong input channels (`inputs[1]` instead of `inputs[0][1]`)
+  2. ChannelMerger combines sources into channels of a single input, not separate inputs
+- **Files changed**:
+  - `frontend/public/audio-worklet-processor.js` - Fixed channel reading from `inputs[0][0]` (mic) and `inputs[0][1]` (system)
+  - `frontend/hooks/useAudioCapture.ts` - Added debugging, better system audio detection, graceful fallback
+- **Learnings for future iterations:**
+  - ChannelMerger outputs multi-channel audio on a single input, not multiple inputs
+  - In AudioWorklet: `inputs[0][0]` = first input's first channel, `inputs[0][1]` = first input's second channel
+  - User MUST check "Share tab audio" / "Share audio" in browser screen share dialog for system audio to work
+  - If no system audio track exists, create a silent oscillator to avoid breaking the audio pipeline
+  - Always log audio track availability for debugging
+---
+
+## 2025-01-28 - Bugfix: Live Transcript and AI Suggestions Not Updating
+- **What was implemented**: Fixed Gemini client to actually transcribe audio and generate suggestions instead of using mock data
+- **Root causes**:
+  1. `_process_audio()` was calling `_fallback_text_analysis()` which only generated random fake questions with 30% probability
+  2. Audio data was being ignored entirely - no actual transcription was happening
+  3. Two separate API calls (transcription + suggestion) caused unnecessary latency
+- **Files changed**:
+  - `backend/services/gemini_client.py`:
+    - Added `pcm16_to_wav()` function to convert raw PCM16 audio to WAV format
+    - Rewrote `_process_audio()` to use Gemini's multimodal API for real audio transcription
+    - Combined transcription + suggestion into SINGLE API call (was 2 calls before)
+    - Added `_parse_combined_response()` to extract transcript, is_question, and suggestion from structured response
+    - Added comprehensive logging with `[AUDIO]`, `[PROCESS]`, `[PARSE]`, `[RECEIVE]` prefixes
+  - `backend/routers/websocket.py`:
+    - Added comprehensive logging with `[WS]`, `[WS-AUDIO]`, `[WS-RECV]`, `[SESSION]` prefixes
+  - `backend/main.py`:
+    - Added logging configuration to show all INFO+ messages with timestamps
+- **Performance improvement**:
+  - Before: ~9-13 seconds latency (5s audio + 2-4s transcription API + 2-4s suggestion API)
+  - After: ~7-9 seconds latency (5s audio + 2-4s single combined API call)
+- **Learnings for future iterations:**
+  - Gemini DOES support audio via multimodal API using `protos.Part(inline_data=protos.Blob(mime_type="audio/wav", data=wav_bytes))`
+  - Must convert PCM16 to WAV format before sending to Gemini (use `wave` module)
+  - Combine multiple LLM operations into single API call when possible to reduce latency
+  - Use structured response format (`TRANSCRIPT:`, `IS_QUESTION:`, `SUGGESTION:`) for reliable parsing
+  - Add comprehensive logging at each step to debug audio pipeline issues
+  - Audio buffer threshold of 30 chunks (~5 seconds) provides good balance of responsiveness vs. transcription quality
+---
+
