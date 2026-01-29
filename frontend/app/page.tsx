@@ -20,7 +20,7 @@ export default function Home() {
 
   const { connect, disconnect, sendMessage, sendAudio } = useWebSocket()
   const { startCapture, stopCapture, error: audioError } = useAudioCapture(sendAudio)
-  const { openOverlayWindow } = useSuggestionBroadcaster()
+  const { openOverlayWindow, closeOverlayWindow } = useSuggestionBroadcaster()
 
   const isInSession = status === 'connected' || status === 'connecting' || status === 'reconnecting'
 
@@ -58,9 +58,12 @@ export default function Home() {
     // Disconnect WebSocket
     disconnect()
 
+    // Close any open overlay windows
+    closeOverlayWindow()
+
     // Reset store
     reset()
-  }, [sendMessage, stopCapture, disconnect, reset])
+  }, [sendMessage, stopCapture, disconnect, closeOverlayWindow, reset])
 
   return (
     <BrowserCheck>

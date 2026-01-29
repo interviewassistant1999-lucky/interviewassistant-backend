@@ -7,7 +7,7 @@ import type { Suggestion } from '@/types'
 const CHANNEL_NAME = 'interview-assistant-suggestions'
 
 interface BroadcastMessage {
-  type: 'suggestion-update' | 'suggestions-sync' | 'request-sync'
+  type: 'suggestion-update' | 'suggestions-sync' | 'request-sync' | 'session-ended'
   suggestions?: Suggestion[]
 }
 
@@ -67,7 +67,14 @@ export function useSuggestionBroadcaster() {
     return overlayWindow
   }, [])
 
-  return { openOverlayWindow }
+  const closeOverlayWindow = useCallback(() => {
+    // Broadcast session ended message to close overlay windows
+    if (channelRef.current) {
+      channelRef.current.postMessage({ type: 'session-ended' })
+    }
+  }, [])
+
+  return { openOverlayWindow, closeOverlayWindow }
 }
 
 /**
@@ -88,6 +95,9 @@ export function useSuggestionReceiver() {
         if (event.data.suggestions) {
           setSuggestions(event.data.suggestions)
         }
+      } else if (event.data.type === 'session-ended') {
+        // Close the overlay window when session ends
+        window.close()
       }
     }
 
