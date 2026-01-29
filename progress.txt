@@ -250,3 +250,26 @@ Started: 2025-01-26
   - Keep overlay UI minimal - focus on latest suggestion with collapsible history
 ---
 
+## 2025-01-29 - Style: Minimal Overlay Window Design
+- **What was implemented**: Redesigned the pop-out overlay window to be minimal, classy, and professional
+- **Problem solved**: Original overlay had too many UI elements (header, footer, badges) that cluttered the view
+- **Changes made**:
+  - Removed header section completely
+  - Removed footer section completely
+  - Clean translucent black background (`bg-black/85`) with `backdrop-blur-md`
+  - Minimal close button (✕) in top-right corner, subtle and unobtrusive
+  - Latest suggestion shown prominently with clean typography
+  - Previous suggestions displayed as faded text (40% opacity) above latest
+  - Simplified SuggestionCard component - no colored headers, just content
+  - Key points shown with subtle green bullets
+  - Follow-up shown in italic, subdued text
+- **Files changed**:
+  - `frontend/app/overlay/page.tsx` - Complete redesign for minimal look
+- **Learnings for future iterations:**
+  - Less is more for overlay/HUD style interfaces
+  - Use opacity and blur for professional translucent effects
+  - Hierarchy through opacity: latest content at 100%, older content faded
+  - Close button should be subtle but accessible
+  - Remove decorative elements (emojis, badges, colored headers) for professional look
+---
+
