@@ -12,6 +12,7 @@ import { SessionControls } from '@/components/Controls/SessionControls'
 import { useSessionStore } from '@/stores/sessionStore'
 import { useWebSocket } from '@/hooks/useWebSocket'
 import { useAudioCapture } from '@/hooks/useAudioCapture'
+import { useSuggestionBroadcaster } from '@/hooks/useSuggestionBroadcast'
 
 export default function Home() {
   const [hasAcceptedDisclaimer, setHasAcceptedDisclaimer] = useState(false)
@@ -19,6 +20,7 @@ export default function Home() {
 
   const { connect, disconnect, sendMessage, sendAudio } = useWebSocket()
   const { startCapture, stopCapture, error: audioError } = useAudioCapture(sendAudio)
+  const { openOverlayWindow } = useSuggestionBroadcaster()
 
   const isInSession = status === 'connected' || status === 'connecting' || status === 'reconnecting'
 
@@ -67,8 +69,18 @@ export default function Home() {
       ) : (
         <main className="min-h-screen flex flex-col">
           {/* Header */}
-          <header className="px-6 py-4 border-b border-border">
+          <header className="px-6 py-4 border-b border-border flex items-center justify-between">
             <h1 className="text-2xl font-bold">Interview Assistant</h1>
+            {isInSession && (
+              <button
+                onClick={openOverlayWindow}
+                className="flex items-center gap-2 px-4 py-2 bg-accent-blue hover:bg-blue-600 rounded-lg text-sm font-medium transition-colors"
+                title="Open suggestions in a floating window"
+              >
+                <span>↗</span>
+                Pop Out Suggestions
+              </button>
+            )}
           </header>
 
           {!isInSession ? (

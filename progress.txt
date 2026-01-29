@@ -51,6 +51,13 @@ Started: 2025-01-26
 - Only generate suggestions after complete question is detected
 - Run monitoring in a background asyncio task
 
+### Cross-Window Communication Pattern
+- Use BroadcastChannel API for same-origin cross-window communication
+- Create channel with same name in both windows
+- Broadcaster sends updates when state changes
+- Receiver requests sync on load to get initial state
+- Use `window.open()` with position/size params for popup windows
+
 ### Component Pattern
 - Settings components go in `frontend/components/Settings/`
 - Follow existing pattern: use `useSessionStore` hook, radio/checkbox inputs with styled labels
@@ -209,5 +216,37 @@ Started: 2025-01-26
   - Always clean up background tasks in `disconnect()` to prevent resource leaks
   - Use flags like `_processing_suggestion` to prevent duplicate/concurrent operations
   - The chat session (`self._chat`) provides context for better suggestion quality
+---
+
+## 2025-01-29 - Feature: Pop-out Floating Suggestion Overlay Window
+- **What was implemented**: Added ability to pop out AI suggestions into a separate floating window that can be resized and positioned anywhere on screen
+- **Problem solved**: During interviews, user needs to see suggestions while focused on the interview tab/window
+- **How it works**:
+  1. Click "Pop Out Suggestions" button in header during session
+  2. Opens a separate browser window with translucent background
+  3. Main app broadcasts suggestions via BroadcastChannel API
+  4. Overlay window receives and displays suggestions in real-time
+  5. Window can be resized and dragged to any position
+- **Files changed**:
+  - `frontend/hooks/useSuggestionBroadcast.ts` - **New file**:
+    - `useSuggestionBroadcaster()` - broadcasts suggestions from main app
+    - `useSuggestionReceiver()` - receives suggestions in overlay window
+    - Uses BroadcastChannel API for cross-window communication
+  - `frontend/app/overlay/page.tsx` - **New file**:
+    - Translucent overlay page showing suggestions
+    - Shows latest suggestion prominently, older ones collapsible
+    - Auto-scrolls to latest suggestion
+  - `frontend/app/globals.css`:
+    - Added `animate-fade-in` animation for new suggestions
+    - Added `animate-pulse-border` animation
+  - `frontend/app/page.tsx`:
+    - Added "Pop Out Suggestions" button in header during session
+    - Integrated `useSuggestionBroadcaster` hook
+- **Learnings for future iterations:**
+  - BroadcastChannel API enables cross-window communication in same origin
+  - Use `window.open()` with position/size parameters for popup windows
+  - Overlay windows should request sync on load to get current state
+  - Translucent backgrounds: use `bg-color/95` with `backdrop-blur`
+  - Keep overlay UI minimal - focus on latest suggestion with collapsible history
 ---
 
