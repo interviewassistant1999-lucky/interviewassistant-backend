@@ -13,6 +13,7 @@ import io
 import json
 import logging
 import os
+import time
 import wave
 from typing import AsyncGenerator, Optional
 
@@ -26,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 # System prompt template (same as OpenAI for consistency)
 SYSTEM_INSTRUCTIONS_TEMPLATE = """
-You are a Passive Interview Co-Pilot. Your role is to assist the candidate during a live interview by providing relevant suggestions ONLY when you detect a question from the interviewer.
+You are a Passive Interview Co-Pilot. Your role is to assist the candidate during a live interview by providing detailed answer ONLY when you detect a question from the interviewer.
 
 ## Core Behavior:
 1. ONLY respond when the interviewer asks a QUESTION
@@ -39,7 +40,7 @@ You are a Passive Interview Co-Pilot. Your role is to assist the candidate durin
 
 ## Response Format:
 When you detect a question, respond with:
-1. **Suggested Response**: A direct answer suggestion
+1. **Suggested Response**: A direct and detailed answer suggestion, based on user's resume and work experience
 2. **Key Points**: 2-3 bullet points to mention
 3. **If They Ask More**: One follow-up tip if the interviewer digs deeper
 
@@ -62,7 +63,7 @@ When you detect a question, respond with:
 """
 
 VERBOSITY_INSTRUCTIONS = {
-    "concise": "Keep responses under 2 sentences. Bullet points only. No elaboration.",
+    "concise": "Keep responses under 12 sentences. Bullet points only. No elaboration.",
     "moderate": "Provide 2-3 sentence suggestions with supporting points. Balanced detail.",
     "detailed": "Give comprehensive suggestions with full context, examples, and structure.",
 }
@@ -124,7 +125,14 @@ class GeminiClient:
     but uses Gemini's API. It handles:
     - Audio transcription using Gemini's multimodal capabilities
     - Suggestion generation for interview questions
+
+    Key feature: Waits for the interviewer to complete their question (detected
+    by a pause in speech) before generating suggestions.
     """
+
+    # Configuration for speech completion detection
+    PAUSE_THRESHOLD_SECONDS = 2.0  # Seconds of silence to consider speech complete
+    MIN_QUESTION_LENGTH = 10  # Minimum characters for a valid question
 
     def __init__(self):
         logger.info("[GEMINI] Initializing GeminiClient")
@@ -138,6 +146,13 @@ class GeminiClient:
         self._running = False
         self._verbosity = "moderate"
         self._instructions = ""
+
+        # Transcript accumulation for complete question detection
+        self._transcript_buffer: list[str] = []  # Accumulated transcript segments
+        self._last_speech_time: float = 0  # Timestamp of last detected speech
+        self._speech_completion_task: Optional[asyncio.Task] = None  # Background task for pause detection
+        self._processing_suggestion = False  # Flag to prevent duplicate suggestion generation
+
         logger.info("[GEMINI] GeminiClient initialized")
 
     @property
@@ -205,6 +220,13 @@ class GeminiClient:
 
             self._connected = True
             self._running = True
+
+            # Start the speech completion monitoring task
+            self._speech_completion_task = asyncio.create_task(
+                self._monitor_speech_completion()
+            )
+            logger.info("[GEMINI] Started speech completion monitoring task")
+
             logger.info("Connected to Gemini API")
             return True
 
@@ -254,10 +276,11 @@ class GeminiClient:
                 logger.warning(f"[AUDIO] Audio buffer too small ({len(audio_bytes)} bytes), skipping processing")
 
     async def _process_audio(self, audio_bytes: bytes) -> None:
-        """Process audio chunk using Gemini's multimodal capabilities.
+        """Process audio chunk for transcription only.
 
-        Converts PCM16 audio to WAV format and sends to Gemini for BOTH
-        transcription AND suggestion generation in a SINGLE API call.
+        Converts PCM16 audio to WAV format and sends to Gemini for transcription.
+        Transcripts are accumulated and suggestions are generated only when
+        the interviewer completes their question (detected by a pause).
         """
         logger.info(f"[PROCESS] ===== _process_audio started with {len(audio_bytes)} bytes =====")
 
@@ -277,46 +300,40 @@ class GeminiClient:
             )
             logger.info(f"[PROCESS] Step 2: DONE - Part created with mime_type=audio/wav")
 
-            # Step 3: Send to Gemini for BOTH transcription AND suggestion (single API call)
-            logger.info(f"[PROCESS] Step 3: Sending audio to Gemini for transcription + suggestion (SINGLE CALL)...")
+            # Step 3: Send to Gemini for transcription ONLY (suggestions generated after pause)
+            logger.info(f"[PROCESS] Step 3: Sending audio to Gemini for transcription...")
             logger.info(f"[PROCESS] Step 3: Model = {self._model.model_name if self._model else 'None'}")
 
-            # Build the prompt that asks for both transcription and suggestion
-            combined_prompt = """Listen to this audio and perform the following tasks:
-
-1. TRANSCRIBE: Write exactly what is being said in the audio.
-2. ANALYZE: Determine if the transcribed text is an interview question.
-3. SUGGEST: If it IS an interview question, provide a helpful suggestion for how to answer it.
+            # Build the prompt for transcription only
+            transcription_prompt = """Listen to this audio and transcribe exactly what is being said.
 
 IMPORTANT: You must respond in EXACTLY this format:
 
 TRANSCRIPT: <exact transcription of the audio>
-IS_QUESTION: <YES or NO>
-SUGGESTION: <if IS_QUESTION is YES, provide a structured suggestion with:
-**Suggested Response:** <direct answer suggestion>
-**Key Points:** <2-3 bullet points>
-**If They Ask More:** <follow-up tip>
-
-If IS_QUESTION is NO, write "NONE">
 
 If no speech is detected or the audio is silent, respond with:
-TRANSCRIPT: [SILENCE]
-IS_QUESTION: NO
-SUGGESTION: NONE"""
+TRANSCRIPT: [SILENCE]"""
 
             response = await asyncio.to_thread(
                 self._model.generate_content,
-                [combined_prompt, audio_part]
+                [transcription_prompt, audio_part]
             )
             logger.info(f"[PROCESS] Step 3: DONE - Got response from Gemini")
 
-            # Step 4: Parse the combined response
-            logger.info(f"[PROCESS] Step 4: Parsing combined response...")
+            # Step 4: Parse the transcription response
+            logger.info(f"[PROCESS] Step 4: Parsing transcription response...")
             response_text = response.text.strip()
-            logger.info(f"[PROCESS] Step 4: Raw response:\n{response_text[:500]}{'...' if len(response_text) > 500 else ''}")
+            logger.info(f"[PROCESS] Step 4: Raw response: {response_text[:200]}")
 
-            transcript, is_question, suggestion = self._parse_combined_response(response_text)
-            logger.info(f"[PROCESS] Step 4: Parsed - transcript='{transcript[:100]}...', is_question={is_question}, suggestion_len={len(suggestion)}")
+            # Extract transcript
+            transcript = ""
+            if response_text.startswith("TRANSCRIPT:"):
+                transcript = response_text[len("TRANSCRIPT:"):].strip()
+            else:
+                # Fallback: use the entire response as transcript
+                transcript = response_text.strip()
+
+            logger.info(f"[PROCESS] Step 4: Extracted transcript: '{transcript[:100]}...'")
 
             # Step 5: Check if silence or no meaningful content
             if not transcript or transcript == "[SILENCE]" or len(transcript) < 3:
@@ -325,26 +342,20 @@ SUGGESTION: NONE"""
 
             logger.info(f"[PROCESS] Step 5: Speech detected! Transcript length: {len(transcript)}")
 
-            # Step 6: Send transcription to message queue
-            logger.info(f"[PROCESS] Step 6: Putting transcript in message queue...")
+            # Step 6: Update last speech time and accumulate transcript
+            self._last_speech_time = time.time()
+            self._transcript_buffer.append(transcript)
+            logger.info(f"[PROCESS] Step 6: Updated last_speech_time, buffer now has {len(self._transcript_buffer)} segments")
+
+            # Step 7: Send transcription to message queue for live display
+            logger.info(f"[PROCESS] Step 7: Putting transcript in message queue for live display...")
             await self._message_queue.put({
                 "type": "conversation.item.input_audio_transcription.completed",
                 "transcript": transcript,
             })
-            logger.info(f"[PROCESS] Step 6: DONE - Transcript queued")
+            logger.info(f"[PROCESS] Step 7: DONE - Transcript queued for live display")
 
-            # Step 7: Send suggestion if it was a question
-            if is_question and suggestion and suggestion != "NONE":
-                logger.info(f"[PROCESS] Step 7: Question detected! Putting suggestion in message queue...")
-                await self._message_queue.put({
-                    "type": "response.text.done",
-                    "text": suggestion,
-                })
-                logger.info(f"[PROCESS] Step 7: DONE - Suggestion queued, queue size: {self._message_queue.qsize()}")
-            else:
-                logger.info(f"[PROCESS] Step 7: Not a question, no suggestion needed")
-
-            logger.info(f"[PROCESS] ===== _process_audio completed successfully =====")
+            logger.info(f"[PROCESS] ===== _process_audio completed (suggestion will be generated after pause) =====")
 
         except Exception as e:
             error_str = str(e)
@@ -357,6 +368,159 @@ SUGGESTION: NONE"""
                 await self._fallback_text_analysis()
             else:
                 logger.error(f"[PROCESS] Non-rate-limit error, not retrying")
+
+    async def _monitor_speech_completion(self) -> None:
+        """Background task that monitors for speech completion.
+
+        When the interviewer stops speaking (detected by a pause), this task
+        analyzes the accumulated transcript and generates a suggestion if
+        it's a complete question.
+        """
+        logger.info("[MONITOR] ===== Speech completion monitor started =====")
+
+        try:
+            while self._running:
+                await asyncio.sleep(0.5)  # Check every 500ms
+
+                # Skip if no speech has been detected yet
+                if self._last_speech_time == 0:
+                    continue
+
+                # Skip if we're already processing a suggestion
+                if self._processing_suggestion:
+                    continue
+
+                # Skip if transcript buffer is empty
+                if not self._transcript_buffer:
+                    continue
+
+                # Check if enough time has passed since last speech
+                time_since_speech = time.time() - self._last_speech_time
+
+                if time_since_speech >= self.PAUSE_THRESHOLD_SECONDS:
+                    logger.info(f"[MONITOR] Pause detected! {time_since_speech:.1f}s since last speech")
+
+                    # Get accumulated transcript
+                    full_transcript = " ".join(self._transcript_buffer)
+                    logger.info(f"[MONITOR] Accumulated transcript ({len(self._transcript_buffer)} segments): '{full_transcript[:150]}...'")
+
+                    # Clear the buffer and reset
+                    self._transcript_buffer.clear()
+                    self._last_speech_time = 0
+
+                    # Check if transcript is long enough
+                    if len(full_transcript) < self.MIN_QUESTION_LENGTH:
+                        logger.info(f"[MONITOR] Transcript too short ({len(full_transcript)} chars), skipping suggestion")
+                        continue
+
+                    # Generate suggestion for the complete question
+                    self._processing_suggestion = True
+                    try:
+                        await self._generate_suggestion_for_complete_question(full_transcript)
+                    finally:
+                        self._processing_suggestion = False
+
+        except asyncio.CancelledError:
+            logger.info("[MONITOR] Speech completion monitor cancelled")
+        except Exception as e:
+            logger.error(f"[MONITOR] Error in speech completion monitor: {e}")
+            import traceback
+            logger.error(f"[MONITOR] Traceback:\n{traceback.format_exc()}")
+
+    async def _generate_suggestion_for_complete_question(self, transcript: str) -> None:
+        """Generate a suggestion for a complete question.
+
+        This is called when the interviewer has finished speaking (pause detected).
+        It analyzes the complete transcript and generates a suggestion if it's a question.
+        """
+        logger.info(f"[SUGGEST] ===== Generating suggestion for complete question =====")
+        logger.info(f"[SUGGEST] Complete transcript: '{transcript[:200]}...'")
+
+        if not self._chat:
+            logger.warning(f"[SUGGEST] No chat session available")
+            return
+
+        try:
+            # Ask Gemini to analyze if this is a question and generate a suggestion
+            prompt = f"""The interviewer just finished saying: "{transcript}"
+
+Analyze this statement and determine if it contains an interview question that needs a suggested response.
+
+IMPORTANT: You must respond in EXACTLY this format:
+
+IS_QUESTION: <YES or NO>
+SUGGESTION: <if IS_QUESTION is YES, provide a structured suggestion with:
+**Suggested Response:** <direct answer suggestion based on the candidate's resume and experience>
+**Key Points:** <2-3 bullet points to mention>
+**If They Ask More:** <follow-up tip>
+
+If IS_QUESTION is NO, write "NONE" - the interviewer is just making a statement, greeting, or small talk>
+
+Consider it a question if:
+- It's asking about experience, skills, or background
+- It's asking for opinions or thoughts
+- It's asking about past situations or behaviors
+- It ends with a question mark or uses question words (what, why, how, tell me about, describe, etc.)
+
+Do NOT consider it a question if:
+- It's just a greeting or small talk
+- It's a statement or comment
+- It's giving instructions or information"""
+
+            response = await asyncio.to_thread(
+                self._chat.send_message,
+                prompt
+            )
+
+            response_text = response.text.strip()
+            logger.info(f"[SUGGEST] Response from Gemini:\n{response_text[:500]}...")
+
+            # Parse the response
+            is_question = False
+            suggestion = ""
+
+            lines = response_text.split('\n')
+            suggestion_lines = []
+            in_suggestion = False
+
+            for line in lines:
+                line_stripped = line.strip()
+                if line_stripped.startswith("IS_QUESTION:"):
+                    value = line_stripped[len("IS_QUESTION:"):].strip().upper()
+                    is_question = value == "YES"
+                elif line_stripped.startswith("SUGGESTION:"):
+                    in_suggestion = True
+                    suggestion_start = line_stripped[len("SUGGESTION:"):].strip()
+                    if suggestion_start and suggestion_start.upper() != "NONE":
+                        suggestion_lines.append(suggestion_start)
+                elif in_suggestion and line_stripped:
+                    suggestion_lines.append(line)
+
+            suggestion = '\n'.join(suggestion_lines).strip()
+            if suggestion.upper() == "NONE":
+                suggestion = ""
+
+            logger.info(f"[SUGGEST] Parsed - is_question: {is_question}, suggestion_length: {len(suggestion)}")
+
+            # Send suggestion if it was a question
+            if is_question and suggestion:
+                logger.info(f"[SUGGEST] Question detected! Putting suggestion in message queue...")
+                await self._message_queue.put({
+                    "type": "response.text.done",
+                    "text": suggestion,
+                })
+                logger.info(f"[SUGGEST] DONE - Suggestion queued")
+            else:
+                logger.info(f"[SUGGEST] Not a question or no suggestion generated")
+
+        except Exception as e:
+            error_str = str(e)
+            logger.error(f"[SUGGEST] ERROR: {e}")
+            if "429" in error_str or "quota" in error_str.lower():
+                logger.warning(f"[SUGGEST] Rate limit, sending fallback suggestion")
+                await self._send_fallback_suggestion()
+            import traceback
+            logger.error(f"[SUGGEST] Traceback:\n{traceback.format_exc()}")
 
     def _parse_combined_response(self, response_text: str) -> tuple:
         """Parse the combined transcription + suggestion response.
@@ -563,9 +727,20 @@ SUGGESTION: NONE"""
         """Disconnect from Gemini."""
         self._connected = False
         self._running = False
+
+        # Cancel the speech completion monitoring task
+        if self._speech_completion_task:
+            self._speech_completion_task.cancel()
+            try:
+                await self._speech_completion_task
+            except asyncio.CancelledError:
+                pass
+            self._speech_completion_task = None
+
         self._model = None
         self._chat = None
         self._audio_buffer.clear()
+        self._transcript_buffer.clear()
         logger.info("Disconnected from Gemini API")
 
 

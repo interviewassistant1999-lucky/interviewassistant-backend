@@ -15,7 +15,7 @@ export function useWebSocket() {
     setLatency,
     addTranscriptEntry,
     updateTranscriptEntry,
-    setSuggestion,
+    addSuggestion,
   } = useSessionStore()
 
   const handleMessage = useCallback(
@@ -57,7 +57,7 @@ export function useWebSocket() {
               keyPoints: message.keyPoints,
               followUp: message.followUp,
             }
-            setSuggestion(suggestion)
+            addSuggestion(suggestion)
             break
           }
 
@@ -89,7 +89,7 @@ export function useWebSocket() {
         console.error('Error parsing message:', error)
       }
     },
-    [setStatus, setLatency, addTranscriptEntry, updateTranscriptEntry, setSuggestion]
+    [setStatus, setLatency, addTranscriptEntry, updateTranscriptEntry, addSuggestion]
   )
 
   const connect = useCallback(() => {

@@ -6,12 +6,16 @@ import { useSessionStore } from '@/stores/sessionStore'
 export function TranscriptPanel() {
   const { transcript } = useSessionStore()
   const scrollRef = useRef<HTMLDivElement>(null)
+  const bottomRef = useRef<HTMLDivElement>(null)
 
   // Auto-scroll to bottom when new entries are added
   useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight
-    }
+    // Use requestAnimationFrame to ensure DOM has updated
+    requestAnimationFrame(() => {
+      if (bottomRef.current) {
+        bottomRef.current.scrollIntoView({ behavior: 'smooth', block: 'end' })
+      }
+    })
   }, [transcript])
 
   return (
@@ -29,37 +33,41 @@ export function TranscriptPanel() {
             </p>
           </div>
         ) : (
-          transcript.map((entry) => (
-            <div
-              key={entry.id}
-              className={`p-3 rounded-lg ${
-                entry.speaker === 'interviewer'
-                  ? 'bg-bg-tertiary border-l-2 border-interviewer'
-                  : 'bg-bg-tertiary border-l-2 border-user'
-              }`}
-            >
-              <div className="flex items-center gap-2 mb-1">
-                <span className="text-lg">
-                  {entry.speaker === 'interviewer' ? '👤' : '🎤'}
-                </span>
-                <span
-                  className={`text-sm font-medium ${
-                    entry.speaker === 'interviewer'
-                      ? 'text-interviewer'
-                      : 'text-user'
-                  }`}
-                >
-                  {entry.speaker === 'interviewer' ? 'Interviewer' : 'You'}
-                </span>
+          <>
+            {transcript.map((entry) => (
+              <div
+                key={entry.id}
+                className={`p-3 rounded-lg ${
+                  entry.speaker === 'interviewer'
+                    ? 'bg-bg-tertiary border-l-2 border-interviewer'
+                    : 'bg-bg-tertiary border-l-2 border-user'
+                }`}
+              >
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="text-lg">
+                    {entry.speaker === 'interviewer' ? '👤' : '🎤'}
+                  </span>
+                  <span
+                    className={`text-sm font-medium ${
+                      entry.speaker === 'interviewer'
+                        ? 'text-interviewer'
+                        : 'text-user'
+                    }`}
+                  >
+                    {entry.speaker === 'interviewer' ? 'Interviewer' : 'You'}
+                  </span>
+                </div>
+                <p className="text-text-primary">
+                  {entry.text}
+                  {!entry.isFinal && (
+                    <span className="inline-block w-2 h-4 ml-1 bg-accent-blue animate-pulse" />
+                  )}
+                </p>
               </div>
-              <p className="text-text-primary">
-                {entry.text}
-                {!entry.isFinal && (
-                  <span className="inline-block w-2 h-4 ml-1 bg-accent-blue animate-pulse" />
-                )}
-              </p>
-            </div>
-          ))
+            ))}
+            {/* Scroll anchor */}
+            <div ref={bottomRef} />
+          </>
         )}
       </div>
     </div>

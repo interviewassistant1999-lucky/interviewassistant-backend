@@ -35,6 +35,21 @@ Started: 2025-01-26
 - Frontend uses Zustand store (`frontend/stores/sessionStore.ts`)
 - Add new state fields to `SessionState` interface with corresponding setter actions
 - Types defined in `frontend/types/index.ts`
+- For data that should persist during session (like suggestions), use arrays instead of single values
+- Only clear session data in the `reset()` action (called on session end)
+
+### Auto-Scroll Pattern
+- Use `useRef` with a bottom anchor element (`<div ref={bottomRef} />`) at end of scrollable content
+- Use `scrollIntoView({ behavior: 'smooth', block: 'end' })` for smooth scrolling
+- Wrap in `requestAnimationFrame()` to ensure DOM has updated before scrolling
+- Trigger scroll in `useEffect` watching the data array (e.g., `[transcript]`, `[suggestions]`)
+
+### Speech Completion Detection Pattern
+- Use pause detection to determine when interviewer finishes speaking
+- Accumulate transcript segments in a buffer during speech
+- Monitor for silence (configurable threshold, default 2 seconds)
+- Only generate suggestions after complete question is detected
+- Run monitoring in a background asyncio task
 
 ### Component Pattern
 - Settings components go in `frontend/components/Settings/`
@@ -123,5 +138,76 @@ Started: 2025-01-26
   - Use structured response format (`TRANSCRIPT:`, `IS_QUESTION:`, `SUGGESTION:`) for reliable parsing
   - Add comprehensive logging at each step to debug audio pipeline issues
   - Audio buffer threshold of 30 chunks (~5 seconds) provides good balance of responsiveness vs. transcription quality
+---
+
+## 2025-01-29 - Feature: Suggestion Persistence and Auto-Scroll
+- **What was implemented**: Fixed suggestions disappearing and added auto-scroll to both transcript and suggestion panels
+- **Problems solved**:
+  1. Suggestions were being replaced (only stored single `currentSuggestion`) - now accumulate in array
+  2. Panels didn't auto-scroll when content overflowed the visible area
+- **Files changed**:
+  - `frontend/stores/sessionStore.ts`:
+    - Changed `currentSuggestion: Suggestion | null` to `suggestions: Suggestion[]`
+    - Changed `setSuggestion()` to `addSuggestion()` which appends to array
+    - Reset now clears `suggestions` array (only on session end)
+  - `frontend/hooks/useWebSocket.ts`:
+    - Updated to use `addSuggestion()` instead of `setSuggestion()`
+  - `frontend/components/Panels/SuggestionPanel.tsx`:
+    - Now displays ALL suggestions as numbered cards with `SuggestionCard` component
+    - Shows suggestion count badge in header
+    - Added `bottomRef` scroll anchor and `requestAnimationFrame` + `scrollIntoView` for smooth auto-scroll
+  - `frontend/components/Panels/TranscriptPanel.tsx`:
+    - Added `bottomRef` scroll anchor for improved auto-scroll
+    - Uses `requestAnimationFrame` + `scrollIntoView({ behavior: 'smooth' })` for reliable scrolling
+- **Learnings for future iterations:**
+  - For session-persistent data, use arrays and append actions instead of replacing single values
+  - Auto-scroll works best with a bottom anchor element + `scrollIntoView` rather than `scrollTop = scrollHeight`
+  - Wrap scroll logic in `requestAnimationFrame` to ensure DOM has updated first
+  - TypeScript: update both interface and implementation when changing state shape
+---
+
+## 2025-01-29 - Feature: Wait for Complete Question Before Generating Suggestion
+- **What was implemented**: AI now waits for interviewer to finish speaking before generating suggestions
+- **Problem solved**: Previously suggestions were generated for partial sentences/fragments mid-speech
+- **How it works**:
+  1. Audio is transcribed immediately and shown in live transcript (for real-time feedback)
+  2. Transcripts are accumulated in a buffer (`_transcript_buffer`)
+  3. Background task monitors for speech pause (2 seconds of silence)
+  4. When pause detected, complete accumulated transcript is analyzed
+  5. If it's a question, suggestion is generated; otherwise ignored
+- **Files changed**:
+  - `backend/services/gemini_client.py`:
+    - Added configuration constants:
+      - `PAUSE_THRESHOLD_SECONDS = 2.0` - silence duration to consider speech complete
+      - `MIN_QUESTION_LENGTH = 10` - minimum chars for valid question
+    - Added new state variables:
+      - `_transcript_buffer: list[str]` - accumulates transcript segments
+      - `_last_speech_time: float` - timestamp of last detected speech
+      - `_speech_completion_task` - background monitoring task
+      - `_processing_suggestion` - prevents duplicate generation
+    - Modified `_process_audio()`:
+      - Now only does transcription (removed suggestion generation)
+      - Sends transcripts immediately for live display
+      - Accumulates transcripts and updates `_last_speech_time`
+    - Added `_monitor_speech_completion()`:
+      - Background asyncio task checking every 500ms
+      - Detects pause when `time.time() - _last_speech_time >= PAUSE_THRESHOLD_SECONDS`
+      - Triggers suggestion generation with complete transcript
+    - Added `_generate_suggestion_for_complete_question()`:
+      - Analyzes complete transcript to determine if it's a question
+      - Uses structured prompt with `IS_QUESTION:` and `SUGGESTION:` format
+      - Only sends suggestion to queue if it's actually a question
+    - Updated `connect()` to start `_speech_completion_task`
+    - Updated `disconnect()` to cancel task and clear buffers
+- **Architecture decision**: Separated transcription from suggestion generation
+  - Transcription: Immediate (for live display)
+  - Suggestion: Delayed until speech complete (for accuracy)
+- **Learnings for future iterations:**
+  - Use background asyncio tasks for continuous monitoring (e.g., pause detection)
+  - Separate concerns: live display vs. intelligent analysis can have different timing
+  - Pause detection threshold of 2 seconds works well for natural speech patterns
+  - Always clean up background tasks in `disconnect()` to prevent resource leaks
+  - Use flags like `_processing_suggestion` to prevent duplicate/concurrent operations
+  - The chat session (`self._chat`) provides context for better suggestion quality
 ---
 

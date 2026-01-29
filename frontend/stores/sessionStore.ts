@@ -25,7 +25,7 @@ interface SessionState {
 
   // Content
   transcript: TranscriptEntry[]
-  currentSuggestion: Suggestion | null
+  suggestions: Suggestion[]  // Array of all suggestions during session
 
   // Settings
   verbosity: Verbosity
@@ -42,7 +42,7 @@ interface SessionState {
   setSystemActive: (active: boolean) => void
   addTranscriptEntry: (entry: TranscriptEntry) => void
   updateTranscriptEntry: (id: string, text: string, isFinal: boolean) => void
-  setSuggestion: (suggestion: Suggestion) => void
+  addSuggestion: (suggestion: Suggestion) => void  // Add to suggestions array
   setVerbosity: (verbosity: Verbosity) => void
   setProvider: (provider: LLMProvider) => void
   setContext: (context: Partial<SessionContext>) => void
@@ -64,7 +64,7 @@ export const useSessionStore = create<SessionState>((set) => ({
   micActive: false,
   systemActive: false,
   transcript: [],
-  currentSuggestion: null,
+  suggestions: [],  // All suggestions persist during session
   verbosity: 'moderate',
   provider: 'gemini',  // Default to Gemini for free tier access
   context: { ...initialContext },
@@ -92,7 +92,11 @@ export const useSessionStore = create<SessionState>((set) => ({
       ),
     })),
 
-  setSuggestion: (currentSuggestion) => set({ currentSuggestion }),
+  // Add suggestion to the array (persists all suggestions)
+  addSuggestion: (suggestion) =>
+    set((state) => ({
+      suggestions: [...state.suggestions, suggestion],
+    })),
 
   setVerbosity: (verbosity) => set({ verbosity }),
 
@@ -112,6 +116,6 @@ export const useSessionStore = create<SessionState>((set) => ({
       micActive: false,
       systemActive: false,
       transcript: [],
-      currentSuggestion: null,
+      suggestions: [],  // Only clear on session end
     }),
 }))
