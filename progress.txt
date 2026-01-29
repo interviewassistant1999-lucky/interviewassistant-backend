@@ -273,3 +273,37 @@ Started: 2025-01-26
   - Remove decorative elements (emojis, badges, colored headers) for professional look
 ---
 
+## 2025-01-29 - Feature: PWA Support for Minimal Browser Chrome
+- **What was implemented**: Added Progressive Web App (PWA) support so the app can be installed and run with minimal browser UI
+- **Problem solved**: Browser address bar and controls visible in popup window; PWA mode removes these
+- **How it works**:
+  1. User clicks "Install" prompt in browser (or menu > Install app)
+  2. App installs to desktop/home screen
+  3. When launched, runs in standalone mode with minimal chrome
+  4. Overlay popup also opens with minimal browser UI
+- **Files created**:
+  - `frontend/public/manifest.json` - PWA manifest with app name, icons, display mode
+  - `frontend/public/sw.js` - Service worker for caching and offline support
+  - `frontend/public/icons/icon-192.svg` - App icon (192x192)
+  - `frontend/public/icons/icon-512.svg` - App icon (512x512)
+  - `frontend/components/ServiceWorkerRegistration.tsx` - Client-side SW registration
+- **Files changed**:
+  - `frontend/app/layout.tsx` - Added manifest link, PWA meta tags, viewport config
+- **PWA Features**:
+  - `display: standalone` - Runs without browser UI
+  - Custom theme color (#0f0f0f)
+  - Installable on desktop and mobile
+  - Service worker for basic caching
+- **Learnings for future iterations:**
+  - PWA manifest requires `display: standalone` for minimal chrome
+  - SVG icons work in modern browsers but PNG recommended for full compatibility
+  - Service worker must be at root (`/sw.js`) to control all pages
+  - Use `navigator.serviceWorker.register()` in client component
+  - Apple requires specific meta tags for iOS PWA support
+---
+
+## Future Scope
+- **Desktop Application**: Build native desktop app using Electron or Tauri for complete control over window chrome, system tray integration, and global hotkeys
+- **PNG Icons**: Generate proper PNG icons (192x192, 512x512) for better PWA compatibility across all platforms
+---
+

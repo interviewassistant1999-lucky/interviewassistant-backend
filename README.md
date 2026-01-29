@@ -9,6 +9,8 @@ Real-Time Interview Assistant MVP - AI-powered coaching during interviews with a
 - **Dual Audio Capture**: Captures both microphone (you) and system audio (interviewer)
 - **Smart Question Detection**: Waits for complete questions before generating suggestions
 - **Session Persistence**: All suggestions persist throughout the interview session
+- **Pop-out Overlay**: Floating suggestion window you can position anywhere on screen
+- **PWA Support**: Install as app for minimal browser chrome
 - **Multiple LLM Providers**: Supports Gemini (free) and OpenAI
 
 ## Prerequisites
@@ -183,12 +185,49 @@ npm run build        # Build for production
 | No suggestions appearing | Check backend terminal for logs, ensure Gemini API key is valid |
 | 429 Rate limit error | Gemini free tier has limits; wait a minute and try again |
 
+## Install as App (PWA)
+
+For the best experience with minimal browser UI:
+
+1. Open the app in **Chrome/Edge**
+2. Click the **install icon** in the address bar (or Menu > Install Interview Assistant)
+3. Click **Install**
+4. The app now runs with minimal chrome - no address bar!
+
+**Benefits of PWA mode:**
+- Cleaner interface without browser controls
+- Pop-out overlay window has minimal title bar
+- Can be launched from desktop/start menu
+- Works offline (basic caching)
+
+## Pop-out Suggestion Overlay
+
+During an interview session:
+
+1. Click **"Pop Out Suggestions"** button in the header
+2. A floating window opens with AI suggestions
+3. **Resize and drag** the window to your preferred position
+4. Keep it visible while you're in your interview tab
+
+The overlay shows:
+- Latest suggestion prominently displayed
+- Previous suggestions faded above (for reference)
+- Minimal close button (✕) in corner
+
 ## Tech Stack
 
 - **Backend**: Python, FastAPI, WebSockets
 - **Frontend**: Next.js 14, React, Zustand, Tailwind CSS
 - **LLM**: Google Gemini (default), OpenAI (optional)
 - **Audio**: Web Audio API, AudioWorklet
+- **PWA**: Service Worker, Web App Manifest
+
+## Future Scope
+
+- **Desktop Application**: Native app using Electron or Tauri for complete window control, system tray, and global hotkeys
+- **Mobile App**: React Native or Flutter version for mobile interviews
+- **More LLM Providers**: Claude, Llama, local models via Ollama
+- **Interview Analytics**: Post-interview analysis and improvement suggestions
 
 ## License
 
