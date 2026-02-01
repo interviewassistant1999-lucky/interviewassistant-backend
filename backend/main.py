@@ -2,12 +2,14 @@
 
 import logging
 import sys
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from config import settings
-from routers import websocket
+from routers import websocket, auth, sessions, user_settings, billing
+from db.database import init_db, close_db
 
 # Configure logging to show all INFO+ messages
 logging.basicConfig(
@@ -25,10 +27,26 @@ logging.getLogger("routers.websocket").setLevel(logging.INFO)
 logger = logging.getLogger(__name__)
 logger.info("===== Interview Assistant Backend Starting =====")
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Manage application lifespan - startup and shutdown."""
+    # Startup
+    logger.info("Initializing database...")
+    await init_db()
+    logger.info("Database initialized")
+    yield
+    # Shutdown
+    logger.info("Closing database connections...")
+    await close_db()
+    logger.info("Database connections closed")
+
+
 app = FastAPI(
     title="Interview Assistant API",
     description="Real-time interview coaching backend",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 # Configure CORS
@@ -41,6 +59,10 @@ app.add_middleware(
 )
 
 # Include routers
+app.include_router(auth.router)
+app.include_router(sessions.router)
+app.include_router(user_settings.router)
+app.include_router(billing.router)
 app.include_router(websocket.router)
 
 
