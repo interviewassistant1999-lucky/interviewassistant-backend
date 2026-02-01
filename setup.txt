@@ -1,0 +1,637 @@
+# Interview Assistant - Setup & Deployment Guide
+
+## Table of Contents
+1. Prerequisites
+2. Quick Start (Development)
+3. Backend Setup
+4. Frontend Setup
+5. Environment Configuration
+6. Database Setup
+7. Running the Application
+8. Production Deployment
+9. Troubleshooting
+10. API Keys Setup Guide
+
+---
+
+## 1. Prerequisites
+
+### Required Software
+- **Python 3.11+** (3.12 or 3.14 recommended)
+  - Download: https://www.python.org/downloads/
+  - Verify: `python --version`
+
+- **Node.js 18+** (20 LTS recommended)
+  - Download: https://nodejs.org/
+  - Verify: `node --version` and `npm --version`
+
+- **Git**
+  - Download: https://git-scm.com/downloads
+  - Verify: `git --version`
+
+### Recommended
+- **VS Code** with Python and TypeScript extensions
+- **Chrome or Edge** browser (required for system audio capture)
+
+### Hardware Requirements
+- Minimum: 4GB RAM, 2 CPU cores
+- Recommended: 8GB RAM, 4 CPU cores
+- Storage: 500MB for application + dependencies
+
+---
+
+## 2. Quick Start (Development)
+
+```bash
+# Clone the repository
+git clone <repository-url>
+cd interview_assistant
+
+# Backend setup
+cd backend
+python -m venv venv
+# Windows:
+venv\Scripts\activate
+# Linux/Mac:
+source venv/bin/activate
+
+pip install -r requirements.txt
+cp .env.example .env
+# Edit .env with your settings (see Section 5)
+
+# Initialize database
+python -m alembic upgrade head
+
+# Start backend (in one terminal)
+uvicorn main:app --reload --port 8000
+
+# Frontend setup (in another terminal)
+cd ../frontend
+npm install
+cp .env.example .env.local
+# Edit .env.local if needed
+
+# Start frontend
+npm run dev
+```
+
+Visit: http://localhost:3000
+
+---
+
+## 3. Backend Setup (Detailed)
+
+### 3.1 Create Virtual Environment
+
+```bash
+cd backend
+
+# Create virtual environment
+python -m venv venv
+
+# Activate virtual environment
+# Windows (Command Prompt):
+venv\Scripts\activate.bat
+# Windows (PowerShell):
+venv\Scripts\Activate.ps1
+# Linux/Mac:
+source venv/bin/activate
+```
+
+### 3.2 Install Dependencies
+
+```bash
+pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+### Required packages:
+- fastapi==0.109.0 - Web framework
+- uvicorn[standard]==0.27.0 - ASGI server
+- websockets==12.0 - WebSocket support
+- pydantic==2.5.3 - Data validation
+- pydantic-settings==2.1.0 - Settings management
+- python-dotenv==1.0.0 - Environment variables
+- sqlalchemy[asyncio]==2.0.25 - Database ORM
+- aiosqlite==0.19.0 - Async SQLite driver
+- alembic==1.13.1 - Database migrations
+- passlib[bcrypt]==1.7.4 - Password hashing
+- python-jose[cryptography]==3.3.0 - JWT tokens
+- authlib==1.3.0 - OAuth support
+- cryptography==42.0.0 - Encryption
+- email-validator>=2.0.0 - Email validation
+- google-generativeai==0.8.3 - Gemini API
+- httpx>=0.25.0 - Async HTTP client
+
+### 3.3 Verify Installation
+
+```bash
+python -c "from main import app; print('Backend OK')"
+```
+
+---
+
+## 4. Frontend Setup (Detailed)
+
+### 4.1 Install Dependencies
+
+```bash
+cd frontend
+npm install
+```
+
+### Required packages (from package.json):
+- next@14.1.0 - React framework
+- react@18 - UI library
+- zustand - State management
+- tailwindcss - CSS framework
+- typescript - Type safety
+
+### 4.2 Verify Installation
+
+```bash
+npm run build
+```
+
+Should complete without errors.
+
+---
+
+## 5. Environment Configuration
+
+### 5.1 Backend Environment (.env)
+
+Create `backend/.env` from the example:
+
+```bash
+cd backend
+cp .env.example .env
+```
+
+Edit `backend/.env`:
+
+```env
+# ============================================
+# Database Settings
+# ============================================
+DATABASE_URL=sqlite+aiosqlite:///./interview_assistant.db
+DATABASE_ECHO=false
+
+# ============================================
+# Authentication Settings
+# ============================================
+# IMPORTANT: Generate a secure key for production!
+# Generate with: openssl rand -hex 32
+# Or: python -c "import secrets; print(secrets.token_hex(32))"
+JWT_SECRET_KEY=your-super-secret-key-change-this-in-production
+
+# Token expiration (default: 7 days = 10080 minutes)
+JWT_EXPIRE_MINUTES=10080
+
+# ============================================
+# Google OAuth (Optional)
+# ============================================
+# Get credentials at: https://console.cloud.google.com/apis/credentials
+# 1. Create OAuth 2.0 Client ID
+# 2. Add authorized redirect URI: http://localhost:3000/auth/callback
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
+GOOGLE_REDIRECT_URI=http://localhost:3000/auth/callback
+
+# ============================================
+# Encryption Settings
+# ============================================
+# Generate with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+ENCRYPTION_KEY=
+
+# ============================================
+# LLM Provider Selection
+# ============================================
+# Options: 'openai', 'gemini', 'adaptive', 'mock'
+# 'adaptive' = Groq (recommended - fastest, free tier)
+LLM_PROVIDER=adaptive
+
+# Groq API Key (for Adaptive provider - RECOMMENDED)
+# Get FREE key at: https://console.groq.com/keys
+GROQ_API_KEY=
+
+# OpenAI API Key (for OpenAI provider)
+# Get at: https://platform.openai.com/api-keys
+OPENAI_API_KEY=
+
+# Gemini API Key (for Gemini provider)
+# Get FREE key at: https://aistudio.google.com/apikey
+GEMINI_API_KEY=
+
+# ============================================
+# CORS Settings
+# ============================================
+ALLOWED_ORIGINS=http://localhost:3000
+
+# ============================================
+# Rate Limiting (for development)
+# ============================================
+DEV_MODE=false
+RATE_LIMIT_RPM=4
+AUDIO_BUFFER_SECONDS=3
+
+# ============================================
+# Turn Detection Settings
+# ============================================
+TURN_DETECTION_ENABLED=true
+TURN_SILENCE_THRESHOLD_MS=1500
+TURN_MIN_WORDS=3
+USE_SPEECH_TIMING_FOR_TURNS=true
+SPEECH_SILENCE_THRESHOLD_MS=3000
+```
+
+### 5.2 Frontend Environment (.env.local)
+
+Create `frontend/.env.local`:
+
+```env
+# Backend API URL
+NEXT_PUBLIC_API_URL=http://localhost:8000
+
+# WebSocket URL (optional, defaults to API_URL)
+NEXT_PUBLIC_WS_URL=ws://localhost:8000
+```
+
+### 5.3 Generate Required Keys
+
+```bash
+# Generate JWT secret key
+python -c "import secrets; print('JWT_SECRET_KEY=' + secrets.token_hex(32))"
+
+# Generate Fernet encryption key
+python -c "from cryptography.fernet import Fernet; print('ENCRYPTION_KEY=' + Fernet.generate_key().decode())"
+```
+
+---
+
+## 6. Database Setup
+
+### 6.1 Initialize Database
+
+```bash
+cd backend
+
+# Ensure virtual environment is activated
+# Create all tables
+python -m alembic upgrade head
+```
+
+This creates `interview_assistant.db` with all required tables.
+
+### 6.2 Verify Database
+
+```bash
+# Check tables were created
+python -c "
+from db.database import engine
+from sqlalchemy import inspect
+inspector = inspect(engine.sync_engine)
+print('Tables:', inspector.get_table_names())
+"
+```
+
+Expected output:
+```
+Tables: ['alembic_version', 'users', 'interview_sessions', 'user_api_keys', 'usage_records', 'payments']
+```
+
+### 6.3 Database Migrations
+
+When models change:
+
+```bash
+# Generate new migration
+python -m alembic revision --autogenerate -m "description of changes"
+
+# Apply migration
+python -m alembic upgrade head
+
+# Rollback one version
+python -m alembic downgrade -1
+
+# View migration history
+python -m alembic history
+```
+
+---
+
+## 7. Running the Application
+
+### 7.1 Development Mode
+
+Terminal 1 - Backend:
+```bash
+cd backend
+# Activate venv first
+uvicorn main:app --reload --host 0.0.0.0 --port 8000
+```
+
+Terminal 2 - Frontend:
+```bash
+cd frontend
+npm run dev
+```
+
+Access:
+- Frontend: http://localhost:3000
+- Backend API: http://localhost:8000
+- API Docs: http://localhost:8000/docs
+- Health Check: http://localhost:8000/health
+
+### 7.2 Production Mode (Local)
+
+Backend:
+```bash
+cd backend
+uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4
+```
+
+Frontend:
+```bash
+cd frontend
+npm run build
+npm run start
+```
+
+---
+
+## 8. Production Deployment
+
+### 8.1 Backend Deployment (Railway/Render/Fly.io)
+
+#### Option A: Railway
+
+1. Create account at https://railway.app
+2. Connect GitHub repository
+3. Add environment variables from `.env`
+4. Deploy
+
+```bash
+# Procfile for Railway
+web: uvicorn main:app --host 0.0.0.0 --port $PORT
+```
+
+#### Option B: Render
+
+1. Create account at https://render.com
+2. Create new Web Service
+3. Connect repository, select `backend` directory
+4. Build command: `pip install -r requirements.txt`
+5. Start command: `uvicorn main:app --host 0.0.0.0 --port $PORT`
+6. Add environment variables
+
+#### Option C: Docker
+
+Create `backend/Dockerfile`:
+```dockerfile
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+# Run migrations on startup
+RUN python -m alembic upgrade head
+
+EXPOSE 8000
+
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+```
+
+Build and run:
+```bash
+docker build -t interview-assistant-backend .
+docker run -p 8000:8000 --env-file .env interview-assistant-backend
+```
+
+### 8.2 Frontend Deployment (Vercel)
+
+1. Create account at https://vercel.com
+2. Import GitHub repository
+3. Set root directory to `frontend`
+4. Add environment variables:
+   - `NEXT_PUBLIC_API_URL=https://your-backend-url.com`
+5. Deploy
+
+Or use Vercel CLI:
+```bash
+cd frontend
+npm i -g vercel
+vercel
+```
+
+### 8.3 Database Deployment (Production)
+
+For production, switch from SQLite to PostgreSQL:
+
+1. Create PostgreSQL database (Supabase, Railway, Render, etc.)
+
+2. Update `DATABASE_URL`:
+```env
+DATABASE_URL=postgresql+asyncpg://user:password@host:5432/dbname
+```
+
+3. Install PostgreSQL driver:
+```bash
+pip install asyncpg
+```
+
+4. Run migrations:
+```bash
+python -m alembic upgrade head
+```
+
+### 8.4 Production Checklist
+
+- [ ] Generate secure JWT_SECRET_KEY (32+ characters)
+- [ ] Generate ENCRYPTION_KEY for API key storage
+- [ ] Set up PostgreSQL database
+- [ ] Configure ALLOWED_ORIGINS for your domain
+- [ ] Set up Google OAuth credentials (if using)
+- [ ] Configure HTTPS (handled by hosting platform)
+- [ ] Set DEV_MODE=false
+- [ ] Add at least one LLM provider API key
+- [ ] Test authentication flow
+- [ ] Test WebSocket connection
+- [ ] Set up monitoring/logging (Sentry recommended)
+
+---
+
+## 9. Troubleshooting
+
+### 9.1 Common Issues
+
+#### "Module not found" errors
+```bash
+# Ensure virtual environment is activated
+# Windows:
+venv\Scripts\activate
+# Linux/Mac:
+source venv/bin/activate
+
+# Reinstall dependencies
+pip install -r requirements.txt
+```
+
+#### Database errors
+```bash
+# Reset database (WARNING: deletes all data)
+rm interview_assistant.db
+python -m alembic upgrade head
+```
+
+#### CORS errors
+Check `ALLOWED_ORIGINS` in `.env` includes your frontend URL.
+
+#### WebSocket connection failed
+1. Check backend is running on port 8000
+2. Check `NEXT_PUBLIC_API_URL` in frontend
+3. Check browser console for errors
+4. Verify Chrome/Edge browser (Firefox/Safari not supported for system audio)
+
+#### Audio capture not working
+1. User must click "Share tab audio" in browser dialog
+2. Check microphone permissions
+3. Try Chrome instead of Edge
+4. Check browser console for errors
+
+#### JWT token errors
+```bash
+# Regenerate JWT secret
+python -c "import secrets; print(secrets.token_hex(32))"
+# Update JWT_SECRET_KEY in .env
+# Clear browser localStorage
+```
+
+#### Encryption key errors
+```bash
+# Generate new encryption key
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+# Update ENCRYPTION_KEY in .env
+# Note: Existing encrypted API keys will become invalid
+```
+
+### 9.2 Logs
+
+Backend logs:
+```bash
+# Run with debug logging
+uvicorn main:app --reload --log-level debug
+```
+
+Frontend logs:
+- Open browser Developer Tools (F12)
+- Check Console tab for errors
+- Check Network tab for failed requests
+
+### 9.3 Health Checks
+
+```bash
+# Backend health
+curl http://localhost:8000/health
+
+# Expected response:
+# {"status":"healthy","version":"1.0.0"}
+```
+
+---
+
+## 10. API Keys Setup Guide
+
+### 10.1 Groq (Recommended - FREE)
+
+1. Go to https://console.groq.com/keys
+2. Sign up for free account (Google/GitHub login)
+3. Click "Create API Key"
+4. Copy the key (starts with `gsk_`)
+5. Add to `.env`: `GROQ_API_KEY=gsk_...`
+
+**Why Groq?**
+- Ultra-fast inference (~50ms for transcription)
+- Generous free tier
+- OpenAI-compatible API
+
+### 10.2 OpenAI (Paid)
+
+1. Go to https://platform.openai.com/api-keys
+2. Sign up and add payment method
+3. Create new secret key
+4. Copy the key (starts with `sk-`)
+5. Add to `.env`: `OPENAI_API_KEY=sk-...`
+
+**Costs:** ~$0.006/minute for Whisper + GPT-4
+
+### 10.3 Gemini (Free tier available)
+
+1. Go to https://aistudio.google.com/apikey
+2. Sign in with Google account
+3. Click "Create API key"
+4. Copy the key
+5. Add to `.env`: `GEMINI_API_KEY=...`
+
+**Note:** Free tier has strict rate limits (15 RPM)
+
+### 10.4 Google OAuth (Optional)
+
+1. Go to https://console.cloud.google.com/apis/credentials
+2. Create new project (or select existing)
+3. Configure OAuth consent screen:
+   - User type: External
+   - App name: Interview Assistant
+   - Scopes: email, profile
+4. Create OAuth 2.0 Client ID:
+   - Application type: Web application
+   - Authorized redirect URIs:
+     - http://localhost:3000/auth/callback (dev)
+     - https://your-domain.com/auth/callback (prod)
+5. Copy Client ID and Client Secret
+6. Add to `.env`:
+   ```
+   GOOGLE_CLIENT_ID=...
+   GOOGLE_CLIENT_SECRET=...
+   ```
+
+---
+
+## Quick Reference Commands
+
+```bash
+# Backend
+cd backend
+source venv/bin/activate  # or venv\Scripts\activate on Windows
+uvicorn main:app --reload
+
+# Frontend
+cd frontend
+npm run dev
+
+# Database
+python -m alembic upgrade head  # Apply migrations
+python -m alembic downgrade -1  # Rollback one version
+
+# Build
+cd frontend && npm run build
+
+# Test
+curl http://localhost:8000/health
+```
+
+---
+
+## Support
+
+- Issues: https://github.com/your-repo/issues
+- Documentation: See progress.txt and goingLiveFeature.txt
+- API Docs: http://localhost:8000/docs (when backend running)
+
+---
+
+Last Updated: 2026-02-01
