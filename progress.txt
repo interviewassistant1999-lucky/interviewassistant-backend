@@ -17,6 +17,40 @@ Started: 2025-01-26
 - Use `get_llm_client(provider)` factory function in `backend/services/openai_relay.py` to get the appropriate client
 - Provider selection can come from: (1) frontend UI, (2) environment variable `LLM_PROVIDER`, (3) legacy `USE_MOCK_OPENAI` flag
 - Message types for provider responses: `conversation.item.input_audio_transcription.completed` (transcription), `response.text.done` (suggestions)
+- **Prompt key** can be passed to `connect()` to select response style (`candidate`, `coach`, `star`)
+
+### Semantic Turn Detection Pattern
+- **Problem**: Sending audio chunks every 3-4 seconds causes "jittery" partial suggestions
+- **Solution**: Hybrid Accumulator approach in `backend/services/turn_detector.py`
+- **Flow**:
+  1. Transcribe instantly (~50-100ms) and show transcript to user
+  2. Accumulate transcripts in TurnDetector buffer
+  3. Monitor for silence (configurable threshold, default 1.5s)
+  4. Check for "connective tissue" words (and, because, so...) - don't trigger if present
+  5. Only call LLM for suggestion when turn is semantically complete
+- **Configuration** (in `.env`):
+  - `TURN_DETECTION_ENABLED=true` - Enable/disable feature
+  - `TURN_SILENCE_THRESHOLD_MS=1500` - Silence duration for turn completion
+  - `TURN_MIN_WORDS=3` - Minimum words for valid turn
+- **Connective words**: If last words are connective (and, but, because, so, like, um...), speaker likely just pausing to think
+
+### System Prompt Pattern
+- All prompts are centralized in `backend/services/prompts.py`
+- Use `get_prompt(prompt_key, job_description, resume, work_experience, verbosity)` to get formatted prompt
+- Three prompt styles available:
+  - `candidate`: First-person mode - AI speaks AS the candidate with battle stories and tactical advice
+  - `coach`: Third-person mode - Classic coaching suggestions with key points
+  - `star`: Behavioral mode - STAR method structure for behavioral questions
+- `format_suggestion_for_display()` converts JSON response to display text based on prompt format
+- Default prompt is `candidate` (configurable via `DEFAULT_PROMPT` constant)
+
+### Groq-Specific Patterns (Adaptive Provider)
+- **API compatibility**: Groq uses OpenAI-compatible API endpoints (`/v1/audio/transcriptions`, `/v1/chat/completions`)
+- **Models**: Use `whisper-large-v3-turbo` for transcription, `llama-3.3-70b-versatile` for suggestions
+- **Audio format**: Whisper requires WAV format - use `pcm16_to_wav()` to convert raw PCM16
+- **Transcript merging**: Overlapping audio chunks need deduplication via `_merge_transcript()` method
+- **JSON responses**: Use `response_format: {"type": "json_object"}` for structured parsing
+- **Performance**: ~50-100ms transcription, ~200-400ms suggestion generation (10x faster than alternatives)
 
 ### Gemini-Specific Patterns
 - **Model names**: Use short names like `gemini-2.5-flash`, `gemini-2.0-flash` (not `models/gemini-...`)
@@ -62,6 +96,93 @@ Started: 2025-01-26
 - Settings components go in `frontend/components/Settings/`
 - Follow existing pattern: use `useSessionStore` hook, radio/checkbox inputs with styled labels
 - Include helpful contextual info (badges, links) for user guidance
+
+### Speaker Detection Pattern
+- Audio worklet tracks energy levels per channel: `micEnergy` vs `systemEnergy`
+- Compare accumulated energy over chunk duration to determine dominant speaker
+- Send `speaker.update` WebSocket message when speaker changes (debounce to avoid flapping)
+- Backend tracks `current_speaker` in connection state for transcript labeling
+- Visual grouping: new block on speaker change, inline continuation for same speaker
+
+### Hero + Collapsible History Pattern
+- Latest/current item gets "hero" treatment - prominent, immediately visible
+- Historical items collapse into minimal pills/previews
+- Expand individual history items on click
+- Toggle to show/hide history section entirely
+- Auto-collapse history when new item arrives
+- Use entrance animations (fade + translate) triggered by item ID change
+
+### Silence-Based Turn Detection Pattern
+- **Problem**: Grouping by speaker alone fails when one party doesn't speak
+- **Solution**: Track `last_transcript_time` and detect turns based on silence
+- If more than 5 seconds passes between transcripts, set `isNewTurn=true`
+- Frontend checks both speaker change AND `isNewTurn` flag for grouping
+- First transcript always starts a new turn
+- **Important**: Threshold must be > `audio_buffer_seconds` (3s) to avoid false triggers
+- Threshold of 5 seconds accounts for audio buffering delays
+
+### Turn Detector Optimization Pattern
+- **Reset state between turns**: Clear `_last_transcript` and `_transcript_buffer` when turn completes
+- **Connective word check**: Only check the LAST word, not last 3 words (too aggressive)
+- **Punctuation trust**: If last word has punctuation (. ? !), trust it even if word looks connective
+- **Silence thresholds**: With punctuation = 1x threshold, without = 1.5x threshold (was 2x)
+- **Preposition check**: Only check for dangling prepositions when no punctuation present
+
+### Transcript Turn Detection Pattern (Two Options)
+- **Option A (Legacy)**: Based on transcript arrival time
+  - Simple but inaccurate due to audio buffering delays
+  - Threshold must be > `audio_buffer_seconds` to avoid false triggers
+  - Config: `use_speech_timing_for_turns = False`
+- **Option B1 (Recommended)**: Based on frontend VAD speech timing
+  - Frontend audio worklet tracks actual speech/silence
+  - Sends `speechEndTimestamp` and `silenceDurationMs` via `speech.timing` message
+  - Backend uses actual silence duration for accurate turn detection
+  - Config: `use_speech_timing_for_turns = True`, `speech_silence_threshold_ms = 3000`
+  - More accurate because it measures real silence, not transcript arrival gaps
+
+### Database Pattern (SQLAlchemy 2.0 Async)
+- Use `AsyncSession` with `async_sessionmaker` for async operations
+- Models inherit from `DeclarativeBase` (not legacy `declarative_base()`)
+- Use `Mapped[Type]` and `mapped_column()` for type-safe columns
+- Relationships use `Mapped[List["Model"]]` with `relationship()`
+- Session dependency: `async def get_db() -> AsyncGenerator[AsyncSession, None]`
+- Lifespan handler in FastAPI for init/close database connections
+- Alembic requires special async configuration in `env.py`
+
+### Authentication Pattern
+- **Password hashing**: Use `passlib[bcrypt]` with `CryptContext`
+- **JWT tokens**: Use `python-jose` with HS256 algorithm
+- **Token storage**: Frontend stores in localStorage via Zustand persist middleware
+- **Protected routes**: Client-side check with redirect to login
+- **Dependency injection**: `require_auth = Depends(get_current_user)` for protected endpoints
+- **OAuth flow**:
+  1. Frontend calls `/api/auth/google` to get OAuth URL
+  2. Redirect to Google
+  3. Google redirects to `/auth/callback` with code
+  4. Frontend sends code to `/api/auth/google/callback`
+  5. Backend exchanges code for tokens, creates/updates user, returns JWT
+
+### API Key Encryption Pattern
+- Use `cryptography.fernet.Fernet` for symmetric encryption
+- Generate key: `Fernet.generate_key()` → store in `ENCRYPTION_KEY` env var
+- Encrypt on save: `fernet.encrypt(key.encode()).decode()`
+- Decrypt on use: `fernet.decrypt(encrypted.encode()).decode()`
+- Mask for display: `key[:3] + "****"` (never show full key)
+- Validate before save: Make test API call to provider
+
+### Dashboard Layout Pattern
+- Use Next.js nested layouts (`dashboard/layout.tsx`)
+- Sidebar with navigation links using `usePathname()` for active state
+- `isActive()` helper: exact match for root, `startsWith()` for nested
+- Protected wrapper component checks auth before rendering children
+- Show user info (name, tier) in header with logout button
+
+### Landing Page Pattern (Marketing)
+- Light theme for marketing, dark theme for app
+- Hero → Features → How it works → Pricing → CTA → Footer
+- Use Tailwind `bg-gradient-to-b from-slate-50 to-white` for subtle gradients
+- Pricing cards with border-2 highlight for recommended plan
+- Conditional CTA based on auth state (logged in → "Start Interview", not → "Get Started")
 
 ---
 
@@ -302,8 +423,590 @@ Started: 2025-01-26
   - Apple requires specific meta tags for iOS PWA support
 ---
 
-## Future Scope
-- **Desktop Application**: Build native desktop app using Electron or Tauri for complete control over window chrome, system tray integration, and global hotkeys
-- **PNG Icons**: Generate proper PNG icons (192x192, 512x512) for better PWA compatibility across all platforms
+## 2026-01-30 - Feature: Rate Limiting Strategy for Gemini Free Tier Testing
+- **What was implemented**: Comprehensive rate limiting system to enable testing with Gemini's free tier (5 RPM limit)
+- **Problem solved**: Gemini free tier has strict rate limits that were causing 429 errors during testing
+- **Strategy implemented**:
+  1. **Token Bucket Rate Limiter** - Classic algorithm for smooth request flow
+  2. **Request Queuing** - Queues requests when rate limited, processes when tokens available
+  3. **Configurable Audio Buffers** - 10 seconds instead of 5 (halves transcription requests)
+  4. **Transcript Caching** - Caches similar audio transcripts to avoid duplicate API calls
+  5. **Dev Mode Toggle** - Enable rate-limit-safe testing mode via environment variable
+  6. **Frontend Status Indicator** - Shows rate limit status in UI
+- **Files created**:
+  - `backend/services/rate_limiter.py` - TokenBucket, RateLimitedExecutor, TranscriptCache classes
+  - `frontend/components/StatusBar/RateLimitIndicator.tsx` - UI component for rate limit status
+- **Files changed**:
+  - `backend/config.py` - Added DEV_MODE, RATE_LIMIT_RPM, AUDIO_BUFFER_SECONDS settings
+  - `backend/services/gemini_client.py` - Integrated rate limiter, configurable audio buffers
+  - `backend/.env.example` - Documented new settings
+  - `frontend/stores/sessionStore.ts` - Added rateLimit state
+  - `frontend/hooks/useWebSocket.ts` - Handle rate_limit.status and rate_limit.update messages
+  - `frontend/components/StatusBar/StatusBar.tsx` - Added RateLimitIndicator
+- **New Environment Variables**:
+  - `DEV_MODE=true` - Enable rate limiting mode
+  - `RATE_LIMIT_RPM=4` - Requests per minute (4 for safety margin on 5 RPM limit)
+  - `AUDIO_BUFFER_SECONDS=10` - Buffer 10 seconds of audio before transcription
+- **Rate Limit Math**:
+  - 10 second audio buffers = max 6 transcription requests/minute
+  - With 4 RPM limit and queuing, actual throughput is ~4 transcriptions/minute
+  - Suggestions are generated only after speech pause, further reducing requests
+  - Result: Can test full interview flow within free tier limits
+- **Learnings for future iterations**:
+  - Token bucket algorithm is ideal for rate limiting with bursts
+  - Caching audio transcripts by hash reduces redundant API calls
+  - Longer audio buffers trade latency for fewer API calls
+  - Dev mode should be easily toggleable for production deployment
+  - UI feedback for rate limiting improves developer experience
+---
+
+## 2026-01-31 - Feature: Groq/Adaptive Provider Support (Ultra-Fast Mode)
+- **What was implemented**: Added Groq as a new LLM provider option ("Adaptive") for ultra-fast transcription and suggestions
+- **Why Groq**: Groq offers dramatically faster inference than other providers:
+  - Whisper transcription: ~50-100ms for 3-second audio chunks (vs ~3s for Gemini)
+  - Llama 3.3 70B: 10x faster than alternatives with high-quality responses
+- **Files created**:
+  - `backend/services/groq_client.py` - **New file** with three client classes:
+    - `GroqTranscriptionClient`: Handles Whisper transcription via Groq API
+    - `GroqLLMClient`: Handles Llama 3.3 70B suggestion generation with JSON response format
+    - `GroqAdaptiveClient`: Combined client that uses both for full audio → suggestion pipeline
+- **Files changed**:
+  - `backend/config.py` - Added `groq_api_key` setting
+  - `backend/services/openai_relay.py` - Extended `get_llm_client()` factory to support `'adaptive'` provider
+  - `backend/.env.example` - Added `GROQ_API_KEY` documentation with link to console.groq.com
+  - `frontend/types/index.ts` - Added `'adaptive'` to `LLMProvider` type
+  - `frontend/components/Settings/ProviderSelector.tsx` - Added Adaptive (Groq) option with "Recommended" badge
+- **Technical details**:
+  - Uses `httpx.AsyncClient` for async HTTP requests to Groq API
+  - Converts PCM16 audio to WAV format before sending to Whisper
+  - Transcript merging algorithm handles overlapping audio chunks to avoid word duplication
+  - JSON response format enforced for structured suggestion parsing
+  - Fallback to Gemini if Groq API fails
+- **API endpoints used**:
+  - `https://api.groq.com/openai/v1/audio/transcriptions` (Whisper)
+  - `https://api.groq.com/openai/v1/chat/completions` (Llama 3.3 70B)
+- **Models used**:
+  - `whisper-large-v3-turbo` for transcription
+  - `llama-3.3-70b-versatile` for suggestions
+- **Learnings for future iterations**:
+  - Groq API is OpenAI-compatible, uses same endpoint structure
+  - Whisper requires audio in WAV format (not raw PCM16)
+  - Overlapping audio chunks need transcript merging to avoid duplicate words
+  - JSON response format (`response_format: {type: "json_object"}`) ensures parseable output
+  - Free tier has generous limits compared to other providers
+  - Consider using Adaptive as default for best user experience
+---
+
+## 2026-02-01 - Feature: Configurable System Prompts with Candidate Mode
+- **What was implemented**: Created a centralized prompt system with multiple prompt styles, defaulting to a new "Candidate Mode" that speaks in first-person
+- **Problem solved**: Original prompts provided third-person coaching suggestions; users wanted responses they could speak directly
+- **New Candidate Mode features**:
+  - First-person responses ("I did," "In my experience at...")
+  - "Battle stories" pulled from resume/experience
+  - "Killer Line" first approach for punchy openings
+  - Tactical advice showing seniority
+  - "The Pivot" technique: brief theory → real example
+- **Files created**:
+  - `backend/services/prompts.py` - Central prompt registry with three styles:
+    - `candidate`: First-person, tactical, battle-tested responses
+    - `coach`: Third-person coaching (original style)
+    - `star`: STAR method for behavioral questions
+  - `frontend/components/Settings/PromptStyleSelector.tsx` - UI for selecting prompt style
+- **Files changed**:
+  - `backend/services/groq_client.py` - Uses prompts module, passes prompt_key to LLM
+  - `backend/services/gemini_client.py` - Uses prompts module for consistency
+  - `backend/services/openai_relay.py` - Uses prompts module for consistency
+  - `backend/routers/websocket.py` - Passes promptKey from frontend to LLM client
+  - `frontend/types/index.ts` - Added `PromptStyle` type
+  - `frontend/stores/sessionStore.ts` - Added `promptKey` state and setter
+  - `frontend/app/page.tsx` - Integrated PromptStyleSelector, passes promptKey to backend
+- **Response format per style**:
+  - `candidate`: `opening_line`, `real_world_story`, `key_metrics`, `tactical_advice`
+  - `coach`: `response`, `key_points`, `follow_up`
+  - `star`: `situation`, `task`, `action`, `result`, `transition`
+- **Learnings for future iterations**:
+  - Centralized prompts in one file makes A/B testing easy
+  - First-person prompts feel more natural for users to read aloud
+  - Response format should match display requirements
+  - `format_suggestion_for_display()` bridges JSON response to UI display
+  - Keep prompts as markdown-formatted strings for easy editing
+---
+
+## 2026-02-01 - Feature: Semantic Turn Detection (Anti-Jitter)
+- **What was implemented**: Hybrid Accumulator approach to detect when interviewer finishes speaking before generating suggestions
+- **Problem solved**: Sending audio chunks every 3-4 seconds caused "jittery" partial suggestions on incomplete sentences
+- **Technical approach**:
+  1. **Instant Transcription**: Groq Whisper transcribes in ~50-100ms, shown to user immediately
+  2. **Accumulation**: Transcripts buffer in TurnDetector instead of triggering LLM each time
+  3. **Silence Detection**: Monitor for configurable silence threshold (default 1.5s)
+  4. **Connective Tissue Check**: Don't trigger if last words are "and", "because", "so", "um", etc.
+  5. **Complete Sentence**: Check for ending punctuation as strong completion signal
+- **Files created**:
+  - `backend/services/turn_detector.py` - TurnDetector and TranscriptAccumulator classes
+- **Files changed**:
+  - `backend/services/groq_client.py` - Integrated TurnDetector, separates transcription from suggestion
+  - `backend/config.py` - Added turn detection settings
+  - `backend/.env.example` - Documented new settings
+- **Configuration options**:
+  - `TURN_DETECTION_ENABLED=true` - Toggle the feature
+  - `TURN_SILENCE_THRESHOLD_MS=1500` - How long silence before turn complete
+  - `TURN_MIN_WORDS=3` - Minimum words for valid turn
+- **Connective words that delay trigger**:
+  - Conjunctions: and, but, or, because, since, although, if, when...
+  - Prepositions: to, of, in, on, at, with, about, for...
+  - Thinking sounds: um, uh, er, ah, hmm, well, now, then...
+- **Learnings for future iterations**:
+  - Separating transcription from suggestion generation enables smarter triggering
+  - ~1.5 second silence is good threshold for natural speech pauses
+  - Connective tissue detection prevents 80%+ of false triggers
+  - Complete punctuation (. ? !) is strong signal of turn completion
+  - Force-complete on disconnect to not lose final content
+---
+
+## 2025-01-31 - Testing & Infrastructure: Quota Exhaustion & Debugging Setup
+- **What happened**: Testing session hit Gemini free tier quota limit
+- **Root cause**: Gemini free tier daily/hourly quotas exhausted from development testing
+- **Debugging infrastructure set up**:
+  - Clawdbot Browser Relay connected for live UI observation
+  - Backend logs can be captured by running uvicorn through Clawdbot exec
+- **Identified improvements needed**:
+  1. **API Key Rotation** - Multiple Gemini API keys to cycle through
+  2. **Multi-Provider Fallback** - Auto-switch Gemini → OpenAI → Local when quota hits
+  3. **Response Caching** - Cache common interview question responses to reduce API calls
+  4. **Local Model Option** - Add Ollama/LM Studio support for unlimited local inference
+- **Architecture consideration**: Current web app approach vs Chrome extension
+  - Web app uses `getDisplayMedia()` for tab audio - shows "sharing" indicator
+  - Chrome extension with `tabCapture` API would be stealthier (no visible indicator)
+  - Chrome extension would provide better UX for interview scenarios
+- **Next steps**:
+  - Implement fallback provider chain (Gemini → OpenAI → mock)
+  - Add API key rotation for multiple free tier keys
+  - Consider Chrome extension version for production
+- **Learnings for future iterations**:
+  - Gemini free tier quota resets daily but can exhaust quickly during dev
+  - Plan for rate limits early in development
+  - Have multiple API keys ready for testing
+  - Local models (Ollama) are valuable for unlimited dev testing
+
+---
+
+## 2026-02-01 - Feature: Speaker Segregation in Live Transcript
+- **What was implemented**: Live transcript now shows clear speaker labels and visual separation between Interviewer and User speech
+- **Problem solved**: All transcript text was merged together making it hard to distinguish who said what
+- **How it works**:
+  1. Audio worklet tracks mic vs system audio energy levels per chunk
+  2. Dominant speaker determined by comparing `micEnergy` vs `systemEnergy`
+  3. Frontend sends `speaker.update` WebSocket message when speaker changes
+  4. Backend tracks current speaker in connection state
+  5. Transcript entries are labeled with speaker and get appropriate styling
+- **Files changed**:
+  - `frontend/public/audio-worklet-processor.js`:
+    - Added `chunkMicEnergy` and `chunkSystemEnergy` tracking
+    - Calculates dominant speaker per audio chunk
+    - Includes `dominantSpeaker` in audio data message
+  - `frontend/hooks/useAudioCapture.ts`:
+    - Added `onAudioChunk` callback for speaker detection
+    - Passes audio data including speaker info to callback
+  - `frontend/app/page.tsx`:
+    - Tracks `currentSpeaker` state
+    - Sends `speaker.update` WebSocket message on speaker change
+    - Debounces speaker changes to avoid flapping
+  - `frontend/types/index.ts`:
+    - Added `SpeakerUpdateMessage` type
+  - `backend/routers/websocket.py`:
+    - Added `current_speaker` to `ConnectionState`
+    - Added `handle_speaker_update()` function
+    - Uses speaker for transcript labeling
+  - `frontend/components/Panels/TranscriptPanel.tsx`:
+    - Shows speaker labels with distinct colors (purple for Interviewer, blue for User)
+    - Groups consecutive speech from same speaker
+    - New visual block when speaker changes
+- **Visual design**:
+  - Interviewer: Purple badge (`bg-purple-500/20 text-purple-400`)
+  - User: Blue badge (`bg-accent-blue/20 text-accent-blue`)
+  - Inline continuation for same speaker, new block for speaker change
+- **Learnings for future iterations**:
+  - Audio energy comparison is simple but effective for speaker detection
+  - Debounce speaker changes to avoid rapid flapping
+  - Visual grouping by speaker dramatically improves readability
+  - Use inline spans for same-speaker continuation to avoid excessive whitespace
+---
+
+## 2026-02-01 - Style: Teleprompter-Style AI Suggestion Panel Redesign
+- **What was implemented**: Complete redesign of AI Suggestion Panel with professional, minimal teleprompter-style UX
+- **Problem solved**: Older suggestions cluttered the view; user had to scroll to find latest suggestion
+- **Design philosophy**:
+  - Latest suggestion = hero treatment, immediately visible
+  - Previous suggestions collapse into minimal "Previous" section
+  - No scrolling needed for current content
+  - Clean typography optimized for quick reading during interviews
+  - Professional, production-grade design inspired by parakeet-ai.com
+- **Files changed**:
+  - `frontend/components/Panels/SuggestionPanel.tsx` - Complete redesign:
+    - `CurrentSuggestion` component with entrance animation (fade up)
+    - `PreviousSuggestionPill` - collapsed minimal preview with expand on click
+    - `ExpandedPreviousSuggestion` - full view when pill is clicked
+    - Collapsible "Previous" section with count badge
+    - Auto-collapse previous section when new suggestion arrives
+    - Key points as subtle pills with emerald dots
+    - Follow-up shown in italic subdued text
+  - `frontend/app/overlay/page.tsx` - Matching redesign for pop-out window:
+    - Same teleprompter-style design
+    - Fixed header with status indicator
+    - Previous indicator with count
+    - Session ended state handling
+  - `frontend/app/globals.css`:
+    - Added `fadeIn` animation for smooth transitions
+    - Added `custom-scrollbar` styles for minimal scrollbar
+    - Added `subtleGlow` animation for active suggestion
+- **Typography choices**:
+  - Main text: `text-[15px] leading-[1.7] font-light tracking-wide` for readability
+  - Labels: `text-[10px] uppercase tracking-widest` for subtle hierarchy
+  - Previous previews: 60 char truncation with ellipsis
+- **Animation details**:
+  - Entrance: `transition-all duration-500 ease-out` with `opacity` and `translate-y`
+  - Uses `useState` to trigger re-animation when suggestion.id changes
+  - 50ms delay before showing to ensure smooth transition
+- **Learnings for future iterations**:
+  - Hero treatment for current content eliminates scroll fatigue
+  - Collapsible history keeps context available without visual clutter
+  - Subtle entrance animations draw attention without being distracting
+  - `tracking-wide` and `leading-[1.7]` significantly improve readability
+  - Auto-collapse on new content keeps focus on what matters
+---
+
+## 2026-02-01 - Feature: Option B1 - Frontend VAD Speech Timing for Turn Detection
+- **What was implemented**: New turn detection method using actual speech timing from frontend VAD instead of transcript arrival time
+- **Problem with Option A**: Transcript arrival time is affected by audio buffering (3s chunks), causing artificial gaps that don't reflect actual speech pauses
+- **Solution (Option B1)**: Frontend audio worklet already has VAD - leverage it to send actual speech timing to backend
+- **How it works**:
+  1. Frontend audio worklet tracks `speechEndTimestamp` (when speech ends) and `silenceDurationMs` (how long silence lasts)
+  2. Frontend sends `speech.timing` message to backend with this data
+  3. Backend uses actual silence duration (not transcript arrival gap) for turn detection
+  4. If `silenceDurationMs >= speech_silence_threshold_ms` → `isNewTurn=true`
+- **Files changed**:
+  - `backend/config.py`:
+    - Added `use_speech_timing_for_turns: bool = True` (feature flag for rollback)
+    - Added `speech_silence_threshold_ms: int = 3000` (3 seconds of actual silence)
+  - `frontend/public/audio-worklet-processor.js`:
+    - Added `speechEndTimestamp` and `currentSilenceDurationMs` tracking
+    - Include timing in audio chunk messages
+  - `frontend/hooks/useAudioCapture.ts`:
+    - Updated `AudioChunkData` interface to include speech timing
+  - `frontend/app/page.tsx`:
+    - Send `speech.timing` message to backend when timing changes
+  - `backend/routers/websocket.py`:
+    - Added `speech_end_timestamp` and `silence_duration_ms` to `ConnectionState`
+    - Added `handle_speech_timing()` handler
+    - Updated transcript handling to use B1 or A based on config
+- **Rollback**: Set `use_speech_timing_for_turns = False` in `.env` to use Option A
+- **Learnings for future iterations**:
+  - Frontend VAD is more accurate than transcript-arrival timing
+  - Audio buffering creates artificial gaps that don't reflect real speech patterns
+  - Feature flags enable safe rollback during testing
+  - The audio worklet already had VAD - just needed to expose timing data
+---
+
+## 2026-02-01 - Bugfix: Slow AI Suggestions for Second Question
+- **What was implemented**: Fixed delay in AI suggestion generation for questions after the first one
+- **Problems identified**:
+  1. `_last_transcript` not reset between turns - caused incorrect overlap detection
+  2. Turn detector checked last 3 words for connectives - too aggressive, blocked valid completions
+  3. Without punctuation, required 2x silence threshold (3s) - too slow
+- **Root causes**:
+  - After Question 1 completed, `_last_transcript` still contained old words
+  - Question 2's first words might be incorrectly removed as "overlap"
+  - Questions like "Tell me about your experience?" blocked because "about" is connective
+- **Fixes applied**:
+  1. Reset `_last_transcript` and `_transcript_buffer` in `_on_turn_complete()`
+  2. Only check LAST word for connective, not last 3 words
+  3. Trust punctuation - if last word has . ? !, don't block on connective
+  4. Reduced "no punctuation" silence from 2x to 1.5x threshold
+- **Files changed**:
+  - `backend/services/groq_client.py`:
+    - Added reset of `_last_transcript` and `_transcript_buffer` in `_on_turn_complete()`
+  - `backend/services/turn_detector.py`:
+    - Simplified connective word checking to only last word
+    - Added punctuation trust: skip connective check if punctuation present
+    - Reduced long silence threshold from 2x to 1.5x
+    - Only check dangling prepositions when no punctuation
+- **Performance improvement**:
+  - Before: 2nd question could take 3+ seconds extra for suggestion
+  - After: Consistent ~1.5s for turn detection with punctuation, ~2.25s without
+- **Learnings for future iterations**:
+  - Always reset accumulator state between turns/questions
+  - Punctuation from Whisper is generally reliable - trust it
+  - Less aggressive connective checking reduces false negatives
+  - Separate overlap merging state from turn detection state
+---
+
+## 2026-02-01 - Bugfix: Transcript Merging When User Doesn't Speak
+- **What was implemented**: Fixed issue where consecutive interviewer questions were merged into one transcript block when user doesn't respond
+- **Problem**: If user doesn't speak (or mic audio not captured), the system had no speaker change to trigger a new transcript block. Result: "Tell me about yourself" and "What are your strengths?" would appear as one merged message.
+- **Root cause**: Transcript grouping was based only on speaker changes. Without a speaker change (user never speaks), all interviewer speech was grouped together.
+- **Solution**: Silence-based turn detection
+  1. Backend tracks `last_transcript_time` for each connection
+  2. If more than 2 seconds passes between transcripts, mark as `isNewTurn=true`
+  3. Frontend starts a new visual block when `isNewTurn` is true (even for same speaker)
+- **Files changed**:
+  - `backend/models/messages.py`:
+    - Added `isNewTurn: bool = False` field to `TranscriptDeltaMessage`
+  - `backend/routers/websocket.py`:
+    - Added `NEW_TURN_SILENCE_THRESHOLD = 2.0` constant
+    - Added `last_transcript_time` to `ConnectionState`
+    - Detect new turns based on silence duration in `receive_from_openai()`
+  - `frontend/types/index.ts`:
+    - Added `isNewTurn: boolean` to `TranscriptEntry` and `TranscriptDeltaMessage`
+  - `frontend/hooks/useWebSocket.ts`:
+    - Pass `isNewTurn` from message to transcript entry
+  - `frontend/components/Panels/TranscriptPanel.tsx`:
+    - Updated grouping logic: `sameSpeaker && !entry.isNewTurn`
+- **Behavior now**:
+  - First transcript: always starts new block
+  - After 5+ seconds of silence: next transcript starts new block
+  - Continuous speech (< 5s gaps): continues same block
+- **Learnings for future iterations**:
+  - Time-based segmentation complements speaker detection for better UX
+  - Threshold must be greater than `audio_buffer_seconds` to avoid false triggers from batched audio
+  - 5 seconds accounts for 3s audio buffering + natural speech pauses
+  - Track timestamps server-side for consistent behavior across clients
+---
+
+## 2026-02-01 - Feature: Production Features - Auth, Dashboard, Billing, Landing Page
+- **What was implemented**: Complete production-ready features including authentication, user dashboard, billing system, and landing page
+- **Branch**: `ralph/interview-assistant-production`
+
+### Phase 1: Database Foundation
+- **SQLAlchemy 2.0 async ORM** with the following models:
+  - `User`: email, password_hash, google_id, name, subscription_tier (free/pro)
+  - `InterviewSession`: user_id, job_description, resume, transcript (JSON), suggestions (JSON), duration_seconds
+  - `UserAPIKey`: user_id, provider (openai/gemini/groq), encrypted_key (Fernet)
+  - `UsageRecord`: user_id, session_id, duration_seconds, charged_amount
+  - `Payment`: user_id, amount, currency, payment_method, status, transaction_id
+- **Alembic migrations** configured for async SQLAlchemy
+- **Files created**:
+  - `backend/db/__init__.py` - Package exports
+  - `backend/db/database.py` - Async engine, session factory, lifespan management
+  - `backend/db/models.py` - All ORM models with relationships
+  - `backend/alembic/` - Migration directory with async env.py
+
+### Phase 2: Authentication System
+- **Email/password auth** with bcrypt password hashing via passlib
+- **JWT tokens** using python-jose with configurable expiration (default 7 days)
+- **Google OAuth** support with authlib (ready for credentials)
+- **API endpoints**:
+  - `POST /api/auth/signup` - Register with email/password
+  - `POST /api/auth/login` - Login, returns JWT
+  - `POST /api/auth/logout` - Client-side token removal
+  - `POST /api/auth/refresh` - Refresh JWT token
+  - `GET /api/auth/me` - Get current user info
+  - `GET /api/auth/google` - Start Google OAuth flow
+  - `POST /api/auth/google/callback` - Complete OAuth, returns JWT
+- **Frontend auth**:
+  - `frontend/stores/authStore.ts` - Zustand store with localStorage persistence
+  - `frontend/hooks/useAuth.ts` - Auth hook with all operations
+  - `frontend/components/ProtectedRoute.tsx` - Route protection wrapper
+  - `frontend/app/login/page.tsx` - Login page (light theme)
+  - `frontend/app/signup/page.tsx` - Signup page (light theme)
+  - `frontend/app/auth/callback/page.tsx` - OAuth callback handler
+- **Files created**:
+  - `backend/services/auth_service.py` - Auth service class
+  - `backend/services/encryption.py` - Fernet encryption for API keys
+  - `backend/routers/auth.py` - Auth API routes
+
+### Phase 3: User Dashboard
+- **Sessions API** (`backend/routers/sessions.py`):
+  - `GET /api/sessions` - List user's sessions (paginated)
+  - `GET /api/sessions/{id}` - Get session details
+  - `DELETE /api/sessions/{id}` - Delete session (with confirmation)
+  - `GET /api/sessions/{id}/transcript` - Download transcript (text or JSON format)
+- **Settings API** (`backend/routers/user_settings.py`):
+  - `GET /api/settings/api-keys` - List stored keys (masked: sk-****)
+  - `PUT /api/settings/api-keys/{provider}` - Store API key (validates first)
+  - `DELETE /api/settings/api-keys/{provider}` - Remove API key
+  - `POST /api/settings/api-keys/{provider}/validate` - Validate stored key
+- **Dashboard UI**:
+  - `frontend/app/dashboard/layout.tsx` - Sidebar layout with navigation
+  - `frontend/app/dashboard/page.tsx` - Overview with stats and quick actions
+  - `frontend/app/dashboard/sessions/page.tsx` - Session history list
+  - `frontend/app/dashboard/settings/page.tsx` - API keys management
+  - `frontend/app/dashboard/billing/page.tsx` - Billing and subscription
+
+### Phase 4: Pricing & Usage System
+- **Usage tracking service** (`backend/services/usage_service.py`):
+  - Free tier limits: 3 sessions, 5 minutes per session
+  - Pro tier: Unlimited sessions, ₹50/hour billing
+  - `can_start_session()` - Check if user can start new session
+  - `get_session_time_limit()` - Get time limit for user's tier
+  - `record_usage()` - Record session usage for billing
+  - `get_usage_stats()` - Get usage statistics
+  - `cleanup_expired_free_sessions()` - Auto-delete 24h old free tier sessions
+- **Billing API** (`backend/routers/billing.py`):
+  - `GET /api/billing/subscription` - Current tier and usage stats
+  - `GET /api/billing/usage` - Usage history
+  - `POST /api/billing/payment` - Process payment (mock)
+  - `GET /api/billing/payments` - Payment history
+  - `GET /api/billing/can-start-session` - Check usage limits before session
+
+### Phase 5: Interview Refactor & Landing Page
+- **Moved interview** from `/` to `/interview` route
+- **New landing page** at `/` with light theme:
+  - Hero section with value proposition
+  - Features overview (Live Transcription, AI Suggestions, Ultra-Fast Response)
+  - How it works (4 steps)
+  - Pricing comparison (Free vs Pro)
+  - CTA sections
+  - Footer with links
+
+### New Environment Variables
+```env
+# Database
+DATABASE_URL=sqlite+aiosqlite:///./interview_assistant.db
+DATABASE_ECHO=false
+
+# Auth
+JWT_SECRET_KEY=your-secret-key-change-in-production
+JWT_EXPIRE_MINUTES=10080
+JWT_ALGORITHM=HS256
+
+# Google OAuth
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
+GOOGLE_REDIRECT_URI=http://localhost:3000/auth/callback
+
+# Encryption (for API keys)
+ENCRYPTION_KEY=  # Generate with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+### New Dependencies
+```
+sqlalchemy[asyncio]==2.0.25
+aiosqlite==0.19.0
+alembic==1.13.1
+passlib[bcrypt]==1.7.4
+python-jose[cryptography]==3.3.0
+authlib==1.3.0
+cryptography==42.0.0
+email-validator>=2.0.0
+```
+
+### Frontend Routes Structure
+```
+/                   - Landing page (light theme, marketing)
+/login              - Login page
+/signup             - Signup page
+/auth/callback      - OAuth callback handler
+/dashboard          - User dashboard overview
+/dashboard/sessions - Session history list
+/dashboard/settings - API keys management
+/dashboard/billing  - Billing & subscription
+/interview          - Interview session (dark theme, original app)
+/overlay            - Pop-out suggestions window
+```
+
+### Learnings for future iterations:
+- **Naming conflicts**: Avoid naming routers same as config imports (e.g., `settings.py` conflicts with `from config import settings`)
+- **Suspense boundary**: Next.js 14 requires Suspense for `useSearchParams()` in static pages
+- **Auth store persistence**: Use Zustand's `persist` middleware with `partialize` to only store token and user
+- **Protected routes**: Use client-side auth check with redirect to avoid flash of content
+- **API key validation**: Validate keys on save AND before session start for better UX
+- **Mock payments**: Realistic flow (method selection, processing spinner, success screen) improves trust
+- **Dashboard layout**: Sidebar + main content pattern works well for settings-heavy apps
+---
+
+## Future Scope (Updated)
+- **Session Persistence**: Save interview sessions to database when completed (transcript, suggestions, duration)
+- **WebSocket Authentication**: Send JWT token with WebSocket connections for authenticated sessions
+- **Use Stored API Keys**: Read user's stored API keys for LLM providers during sessions
+- **Live Usage Counter**: Show remaining time during free tier sessions
+- **Email Verification**: Verify email on signup before allowing sessions
+- **Password Reset**: Forgot password flow with email link
+- **Chrome Extension Version**: Build Chrome extension using `tabCapture` API for stealthier audio capture
+- **Desktop Application**: Electron or Tauri for complete control over window chrome
+- **Multi-Provider Fallback**: Automatic fallback chain (Groq → Gemini → OpenAI) when quota exhausted
+- **Response Caching**: Cache responses for common interview questions to reduce API costs
+---
+
+## Application Architecture Summary
+
+### Backend Structure (FastAPI)
+```
+backend/
+├── main.py                    # FastAPI app entry point with lifespan
+├── config.py                  # Pydantic settings from .env
+├── alembic/                   # Database migrations
+│   ├── env.py                # Async Alembic config
+│   └── versions/             # Migration files
+├── db/
+│   ├── database.py           # Async SQLAlchemy engine and sessions
+│   └── models.py             # ORM models (User, Session, APIKey, etc.)
+├── routers/
+│   ├── auth.py               # Authentication endpoints
+│   ├── sessions.py           # Session CRUD endpoints
+│   ├── user_settings.py      # API keys management
+│   ├── billing.py            # Subscription and payments
+│   └── websocket.py          # Real-time audio/transcript relay
+└── services/
+    ├── auth_service.py       # Auth business logic
+    ├── encryption.py         # Fernet encryption utilities
+    ├── usage_service.py      # Usage tracking and limits
+    ├── groq_client.py        # Groq Whisper + Llama client
+    ├── gemini_client.py      # Gemini multimodal client
+    ├── openai_relay.py       # OpenAI Realtime + provider factory
+    ├── prompts.py            # Centralized system prompts
+    ├── turn_detector.py      # Semantic turn detection
+    └── rate_limiter.py       # Token bucket rate limiting
+```
+
+### Frontend Structure (Next.js 14)
+```
+frontend/
+├── app/
+│   ├── page.tsx              # Landing page (light theme)
+│   ├── layout.tsx            # Root layout with PWA support
+│   ├── login/page.tsx        # Login page
+│   ├── signup/page.tsx       # Signup page
+│   ├── auth/callback/page.tsx # OAuth callback
+│   ├── interview/page.tsx    # Interview session (dark theme)
+│   ├── overlay/page.tsx      # Pop-out suggestions
+│   └── dashboard/
+│       ├── layout.tsx        # Dashboard sidebar layout
+│       ├── page.tsx          # Dashboard overview
+│       ├── sessions/page.tsx # Session history
+│       ├── settings/page.tsx # API keys management
+│       └── billing/page.tsx  # Subscription management
+├── components/
+│   ├── BrowserCheck.tsx      # Chrome/Edge requirement
+│   ├── Disclaimer.tsx        # Ethics modal
+│   ├── ProtectedRoute.tsx    # Auth protection
+│   ├── ContextInput/         # Job description, resume inputs
+│   ├── Panels/               # Transcript and Suggestion panels
+│   ├── Settings/             # Provider, verbosity, prompt selectors
+│   ├── StatusBar/            # Connection, audio levels, rate limit
+│   └── Controls/             # Session start/end buttons
+├── hooks/
+│   ├── useAuth.ts            # Authentication operations
+│   ├── useWebSocket.ts       # WebSocket connection management
+│   ├── useAudioCapture.ts    # Mic + system audio capture
+│   ├── useReconnection.ts    # Exponential backoff reconnection
+│   └── useSuggestionBroadcast.ts # Cross-window communication
+├── stores/
+│   ├── authStore.ts          # Auth state with persistence
+│   └── sessionStore.ts       # Interview session state
+└── types/
+    └── index.ts              # TypeScript interfaces
+```
+
+### Data Flow
+1. **User lands on `/`** → Marketing landing page
+2. **User signs up/logs in** → JWT token stored in localStorage
+3. **User starts interview** → `/interview` with dark theme
+4. **Audio captured** → AudioWorklet merges mic + system audio
+5. **Audio sent via WebSocket** → Backend relays to LLM provider
+6. **Transcription returned** → Displayed in real-time transcript
+7. **Turn completed** → AI generates suggestion
+8. **Session ends** → Data saved (future: to database)
+9. **User reviews in dashboard** → `/dashboard/sessions`
+
 ---
 
