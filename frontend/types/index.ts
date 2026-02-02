@@ -10,6 +10,7 @@ export interface TranscriptEntry {
   speaker: 'user' | 'interviewer'
   text: string
   isFinal: boolean
+  isNewTurn: boolean  // True if this starts a new turn (after silence)
 }
 
 export interface Suggestion {
@@ -28,7 +29,9 @@ export interface SessionContext {
 
 export type Verbosity = 'concise' | 'moderate' | 'detailed'
 
-export type LLMProvider = 'openai' | 'gemini' | 'mock'
+export type LLMProvider = 'openai' | 'gemini' | 'gemini-live' | 'adaptive' | 'mock'
+
+export type PromptStyle = 'candidate' | 'coach' | 'star'
 
 export type ConnectionStatus = 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'error'
 
@@ -41,6 +44,7 @@ export interface SessionStartMessage {
   context: SessionContext
   verbosity: Verbosity
   provider?: LLMProvider
+  promptKey?: PromptStyle
 }
 
 export interface SessionEndMessage {
@@ -57,11 +61,17 @@ export interface PingMessage {
   timestamp: number
 }
 
+export interface SpeakerUpdateMessage {
+  type: 'speaker.update'
+  speaker: 'user' | 'interviewer'
+}
+
 export type ClientMessage =
   | SessionStartMessage
   | SessionEndMessage
   | VerbosityChangeMessage
   | PingMessage
+  | SpeakerUpdateMessage
 
 // Server -> Client Messages
 
@@ -75,6 +85,7 @@ export interface TranscriptDeltaMessage {
   speaker: 'user' | 'interviewer'
   text: string
   isFinal: boolean
+  isNewTurn: boolean  // True if this starts a new turn (after silence)
 }
 
 export interface SuggestionServerMessage {
@@ -104,6 +115,20 @@ export interface PongMessage {
   serverTime: number
 }
 
+export interface RateLimitStatusMessage {
+  type: 'rate_limit.status'
+  dev_mode: boolean
+  rpm: number
+  buffer_seconds: number
+}
+
+export interface RateLimitUpdateMessage {
+  type: 'rate_limit.update'
+  status: 'idle' | 'queued' | 'executing' | 'timeout'
+  queue_position?: number
+  estimated_wait?: number
+}
+
 export type ServerMessage =
   | SessionReadyMessage
   | TranscriptDeltaMessage
@@ -111,6 +136,8 @@ export type ServerMessage =
   | ConnectionStatusMessage
   | ErrorServerMessage
   | PongMessage
+  | RateLimitStatusMessage
+  | RateLimitUpdateMessage
 
 // === Audio Types ===
 

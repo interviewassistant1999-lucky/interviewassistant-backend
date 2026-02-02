@@ -3,6 +3,7 @@
 import { useSessionStore } from '@/stores/sessionStore'
 import { AudioLevelMeter } from './AudioLevelMeter'
 import { ConnectionStatus } from './ConnectionStatus'
+import { RateLimitIndicator } from './RateLimitIndicator'
 
 export function StatusBar() {
   const { micLevel, systemLevel, micActive, systemActive } = useSessionStore()
@@ -12,6 +13,7 @@ export function StatusBar() {
       <div className="flex items-center gap-6">
         <AudioLevelMeter label="Mic" level={micLevel} active={micActive} />
         <AudioLevelMeter label="System" level={systemLevel} active={systemActive} />
+        <RateLimitIndicator />
       </div>
 
       <div className="flex items-center gap-4">

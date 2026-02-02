@@ -18,6 +18,7 @@ from models.messages import (
     SuggestionMessage,
     TranscriptDeltaMessage,
 )
+from config import settings
 from services.openai_relay import get_openai_client, get_llm_client
 from services.session_manager import session_manager
 
@@ -29,14 +30,20 @@ router = APIRouter()
 def parse_suggestion_response(text: str) -> Tuple[str, List[str], str]:
     """Parse the structured response from LLM into separate fields.
 
-    Expected format:
+    Supports multiple formats:
+
+    Candidate Mode (new):
+    **Say First:** <opening line>
+    **Your Story:** <battle story>
+    **Drop These:** <metrics>
+    **Pro Tip:** <tactical advice>
+
+    Coach Mode (original):
     **Suggested Response:**
     <response text>
-
     **Key Points:**
     - point 1
     - point 2
-
     **If They Ask More:**
     <follow-up text>
 
@@ -50,45 +57,109 @@ def parse_suggestion_response(text: str) -> Tuple[str, List[str], str]:
     # Normalize line endings
     text = text.replace('\r\n', '\n')
 
-    # Try to extract "Suggested Response" section
-    response_match = re.search(
-        r'\*\*Suggested Response[:\*]*\*?\*?\s*\n(.*?)(?=\n\*\*Key Points|\n\*\*If They Ask|\Z)',
-        text,
-        re.DOTALL | re.IGNORECASE
-    )
-    if response_match:
-        response = response_match.group(1).strip()
+    # Check if this is Candidate Mode format (has "Say First" or "Your Story")
+    is_candidate_mode = "**Say First:**" in text or "**Your Story:**" in text
 
-    # Try to extract "Key Points" section
-    key_points_match = re.search(
-        r'\*\*Key Points[:\*]*\*?\*?\s*\n(.*?)(?=\n\*\*If They Ask|\Z)',
-        text,
-        re.DOTALL | re.IGNORECASE
-    )
-    if key_points_match:
-        points_text = key_points_match.group(1).strip()
-        # Extract bullet points (lines starting with -, *, •, or numbers)
-        for line in points_text.split('\n'):
-            line = line.strip()
-            # Remove leading bullet markers
-            cleaned = re.sub(r'^[-*•]\s*|^\d+[.)]\s*', '', line).strip()
-            if cleaned:
-                key_points.append(cleaned)
+    if is_candidate_mode:
+        # Parse Candidate Mode format
+        parts = []
 
-    # Try to extract "If They Ask More" section
-    follow_up_match = re.search(
-        r'\*\*If They Ask More[:\*]*\*?\*?\s*\n(.*?)(?=\Z)',
-        text,
-        re.DOTALL | re.IGNORECASE
-    )
-    if follow_up_match:
-        follow_up = follow_up_match.group(1).strip()
+        # Extract "Say First" section
+        say_first_match = re.search(
+            r'\*\*Say First[:\*]*\*?\*?\s*(.*?)(?=\n\*\*|\Z)',
+            text,
+            re.DOTALL | re.IGNORECASE
+        )
+        if say_first_match:
+            opening = say_first_match.group(1).strip()
+            if opening:
+                parts.append(f"**Start with:** {opening}")
 
-    # If no structured format found, use the entire text as response
-    if not response and not key_points and not follow_up:
-        response = text.strip()
+        # Extract "Your Story" section
+        story_match = re.search(
+            r'\*\*Your Story[:\*]*\*?\*?\s*(.*?)(?=\n\*\*|\Z)',
+            text,
+            re.DOTALL | re.IGNORECASE
+        )
+        if story_match:
+            story = story_match.group(1).strip()
+            if story:
+                parts.append(f"\n**Then say:** {story}")
+
+        # Extract "Drop These" section (metrics) -> becomes key_points
+        metrics_match = re.search(
+            r'\*\*Drop These[:\*]*\*?\*?\s*(.*?)(?=\n\*\*|\Z)',
+            text,
+            re.DOTALL | re.IGNORECASE
+        )
+        if metrics_match:
+            metrics = metrics_match.group(1).strip()
+            # Split by | or newlines
+            if '|' in metrics:
+                key_points = [m.strip() for m in metrics.split('|') if m.strip()]
+            else:
+                key_points = [m.strip() for m in metrics.split('\n') if m.strip()]
+
+        # Extract "Pro Tip" section -> becomes follow_up
+        tip_match = re.search(
+            r'\*\*Pro Tip[:\*]*\*?\*?\s*(.*?)(?=\n\*\*|\Z)',
+            text,
+            re.DOTALL | re.IGNORECASE
+        )
+        if tip_match:
+            follow_up = tip_match.group(1).strip()
+
+        response = '\n'.join(parts) if parts else text.strip()
+
+    else:
+        # Parse Coach Mode format (original)
+
+        # Try to extract "Suggested Response" section
+        response_match = re.search(
+            r'\*\*Suggested Response[:\*]*\*?\*?\s*\n(.*?)(?=\n\*\*Key Points|\n\*\*If They Ask|\Z)',
+            text,
+            re.DOTALL | re.IGNORECASE
+        )
+        if response_match:
+            response = response_match.group(1).strip()
+
+        # Try to extract "Key Points" section
+        key_points_match = re.search(
+            r'\*\*Key Points[:\*]*\*?\*?\s*\n(.*?)(?=\n\*\*If They Ask|\Z)',
+            text,
+            re.DOTALL | re.IGNORECASE
+        )
+        if key_points_match:
+            points_text = key_points_match.group(1).strip()
+            # Extract bullet points (lines starting with -, *, •, or numbers)
+            for line in points_text.split('\n'):
+                line = line.strip()
+                # Remove leading bullet markers
+                cleaned = re.sub(r'^[-*•]\s*|^\d+[.)]\s*', '', line).strip()
+                if cleaned:
+                    key_points.append(cleaned)
+
+        # Try to extract "If They Ask More" section
+        follow_up_match = re.search(
+            r'\*\*If They Ask More[:\*]*\*?\*?\s*\n(.*?)(?=\Z)',
+            text,
+            re.DOTALL | re.IGNORECASE
+        )
+        if follow_up_match:
+            follow_up = follow_up_match.group(1).strip()
+
+        # If no structured format found, use the entire text as response
+        if not response and not key_points and not follow_up:
+            response = text.strip()
 
     return response, key_points, follow_up
+
+
+# Silence threshold for detecting new turns (in seconds)
+# Option A (legacy): Based on transcript arrival time
+# If more than this much time passes between transcripts, it's a new turn
+# Must be greater than audio_buffer_seconds (3s) to avoid false triggers
+NEW_TURN_SILENCE_THRESHOLD = 5.0
 
 
 class ConnectionState:
@@ -99,6 +170,14 @@ class ConnectionState:
         self.session_id: Optional[str] = None
         self.openai_client: Optional[Any] = None  # OpenAIRealtimeClient or MockOpenAIClient
         self.receive_task: Optional[asyncio.Task] = None
+        self.current_speaker: str = "interviewer"  # Track current speaker for transcripts
+        self.last_transcript_time: float = 0.0  # Track last transcript time for new turn detection (Option A)
+
+        # Option B1: Speech timing from frontend VAD
+        self.speech_end_timestamp: Optional[float] = None  # When speech last ended (from frontend)
+        self.silence_duration_ms: float = 0.0  # Current silence duration (from frontend)
+        self.silence_before_speech_ms: float = 0.0  # Captured silence duration before speech resumed
+        self.was_speaking: bool = True  # Track previous speaking state to detect transitions
 
 
 @router.websocket("/ws")
@@ -164,6 +243,10 @@ async def handle_json_message(state: ConnectionState, data: dict) -> None:
         await handle_verbosity_change(state, data)
     elif msg_type == "ping":
         await handle_ping(state, data)
+    elif msg_type == "speaker.update":
+        await handle_speaker_update(state, data)
+    elif msg_type == "speech.timing":
+        await handle_speech_timing(state, data)
     else:
         logger.warning(f"Unknown message type: {msg_type}")
 
@@ -174,9 +257,11 @@ async def handle_session_start(state: ConnectionState, data: dict) -> None:
 
     context = data.get("context", {})
     verbosity = data.get("verbosity", "moderate")
-    provider = data.get("provider")  # Can be 'openai', 'gemini', or 'mock'
+    provider = data.get("provider")  # Can be 'openai', 'gemini', 'adaptive', or 'mock'
+    prompt_key = data.get("promptKey")  # Can be 'candidate', 'coach', or 'star'
 
     logger.info(f"[SESSION] Provider requested: {provider}")
+    logger.info(f"[SESSION] Prompt style: {prompt_key or 'default (candidate)'}")
     logger.info(f"[SESSION] Verbosity: {verbosity}")
     logger.info(f"[SESSION] Context - Job desc: {len(context.get('jobDescription', ''))} chars")
     logger.info(f"[SESSION] Context - Resume: {len(context.get('resume', ''))} chars")
@@ -192,7 +277,7 @@ async def handle_session_start(state: ConnectionState, data: dict) -> None:
     state.session_id = session.id
     logger.info(f"[SESSION] Session created: {session.id}")
 
-    # Connect to LLM provider (OpenAI, Gemini, or Mock)
+    # Connect to LLM provider (OpenAI, Gemini, Adaptive, or Mock)
     logger.info(f"[SESSION] Getting LLM client...")
     state.openai_client = get_llm_client(provider)
     provider_name = provider or "default"
@@ -204,6 +289,7 @@ async def handle_session_start(state: ConnectionState, data: dict) -> None:
         resume=session.context.resume,
         work_experience=session.context.work_experience,
         verbosity=verbosity,
+        prompt_key=prompt_key,
     )
     logger.info(f"[SESSION] LLM connection result: {connected}")
 
@@ -275,6 +361,49 @@ async def handle_ping(state: ConnectionState, data: dict) -> None:
     await state.websocket.send_text(pong_msg.model_dump_json())
 
 
+async def handle_speaker_update(state: ConnectionState, data: dict) -> None:
+    """Update the current speaker for transcript labeling."""
+    speaker = data.get("speaker", "interviewer")
+    if speaker in ("user", "interviewer"):
+        state.current_speaker = speaker
+        logger.debug(f"[WS] Speaker updated to: {speaker}")
+
+
+async def handle_speech_timing(state: ConnectionState, data: dict) -> None:
+    """Update speech timing from frontend VAD for Option B1 turn detection."""
+    is_speaking = data.get("isSpeaking", True)
+    silence_ms = data.get("silenceDurationMs", 0.0)
+
+    # Detect transition from silence to speech (speech just resumed)
+    # Capture the silence duration that occurred before speech resumed
+    if is_speaking and not state.was_speaking:
+        # Speech just resumed - capture how long the silence was
+        state.silence_before_speech_ms = state.silence_duration_ms
+        logger.info(f"[WS] Speech resumed after {state.silence_before_speech_ms:.0f}ms of silence")
+
+    # Update current state
+    state.silence_duration_ms = silence_ms
+    state.was_speaking = is_speaking
+
+    # Track if speech just ended
+    if not is_speaking and state.speech_end_timestamp is None:
+        state.speech_end_timestamp = time.time()
+    elif is_speaking:
+        state.speech_end_timestamp = None  # Reset when speech resumes
+
+    # Pass to LLM client for AI suggestion timing AND trigger check
+    # This is critical because audio chunks are NOT sent during silence
+    if state.openai_client and hasattr(state.openai_client, 'update_speech_timing'):
+        state.openai_client.update_speech_timing(is_speaking, silence_ms)
+
+    # Also trigger suggestion check if LLM client supports it
+    # This handles the case where silence threshold is reached but no audio is being sent
+    if state.openai_client and hasattr(state.openai_client, 'check_and_trigger_suggestion'):
+        await state.openai_client.check_and_trigger_suggestion()
+
+    logger.debug(f"[WS] Speech timing: speaking={is_speaking}, silence={silence_ms:.0f}ms, beforeSpeech={state.silence_before_speech_ms:.0f}ms")
+
+
 async def handle_audio_data(state: ConnectionState, audio_bytes: bytes) -> None:
     """Forward audio data to LLM client."""
     if not state.openai_client:
@@ -308,25 +437,57 @@ async def receive_from_openai(state: ConnectionState) -> None:
                 # Transcription completed
                 transcript = message.get("transcript", "")
                 entry_id = str(uuid.uuid4())
-                logger.info(f"[WS-RECV] TRANSCRIPT received: '{transcript[:100]}...'")
+                speaker = state.current_speaker  # Use detected speaker
+                logger.info(f"[WS-RECV] TRANSCRIPT received from {speaker}: '{transcript[:100]}...'")
+
+                # Detect if this is a new turn
+                current_time = time.time()
+                is_new_turn = False
+
+                if settings.use_speech_timing_for_turns:
+                    # Option B1: Use frontend VAD speech timing (more accurate)
+                    # Check if there was significant silence BEFORE this speech started
+                    # We use silence_before_speech_ms which captures the silence duration
+                    # at the moment speech resumed (before it was reset to 0)
+                    if state.silence_before_speech_ms >= settings.speech_silence_threshold_ms:
+                        is_new_turn = True
+                        logger.info(f"[WS-RECV] New turn detected (B1 VAD silence before speech: {state.silence_before_speech_ms:.0f}ms)")
+                        # Reset after using it so we don't mark every transcript as new turn
+                        state.silence_before_speech_ms = 0
+                    elif state.last_transcript_time == 0:
+                        # First transcript is always a new turn
+                        is_new_turn = True
+                else:
+                    # Option A (legacy): Use transcript arrival time
+                    if state.last_transcript_time > 0:
+                        silence_duration = current_time - state.last_transcript_time
+                        if silence_duration >= NEW_TURN_SILENCE_THRESHOLD:
+                            is_new_turn = True
+                            logger.info(f"[WS-RECV] New turn detected (Option A silence: {silence_duration:.1f}s)")
+                    else:
+                        # First transcript is always a new turn
+                        is_new_turn = True
+
+                state.last_transcript_time = current_time
 
                 # Add to session
                 if state.session_id:
                     session_manager.add_transcript_entry(
                         state.session_id,
                         entry_id,
-                        "interviewer",  # Assume input is interviewer
+                        speaker,
                         transcript,
                         is_final=True,
                     )
-                    logger.info(f"[WS-RECV] Transcript added to session")
+                    logger.info(f"[WS-RECV] Transcript added to session (speaker: {speaker}, newTurn: {is_new_turn})")
 
                 # Send to client
                 delta_msg = TranscriptDeltaMessage(
                     id=entry_id,
-                    speaker="interviewer",
+                    speaker=speaker,
                     text=transcript,
                     isFinal=True,
+                    isNewTurn=is_new_turn,
                 )
                 logger.info(f"[WS-RECV] Sending transcript to client WebSocket...")
                 await state.websocket.send_text(delta_msg.model_dump_json())
@@ -369,6 +530,11 @@ async def receive_from_openai(state: ConnectionState) -> None:
                     recoverable=True,
                 )
                 await state.websocket.send_text(error_msg.model_dump_json())
+
+            elif event_type in ("rate_limit.status", "rate_limit.update"):
+                # Forward rate limit messages directly to client (dev mode)
+                logger.info(f"[WS-RECV] Rate limit message: {event_type}")
+                await state.websocket.send_text(json.dumps(message))
 
     except asyncio.CancelledError:
         logger.info(f"[WS-RECV] Task cancelled after {message_count} messages")

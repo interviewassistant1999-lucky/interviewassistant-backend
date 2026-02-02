@@ -70,6 +70,7 @@ class TranscriptDeltaMessage(BaseModel):
     speaker: Literal["user", "interviewer"]
     text: str
     isFinal: bool
+    isNewTurn: bool = False  # True if this starts a new turn (after silence)
 
 
 class SuggestionMessage(BaseModel):

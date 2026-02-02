@@ -6,11 +6,22 @@ import { create } from 'zustand'
 import type {
   ConnectionStatus,
   LLMProvider,
+  PromptStyle,
   SessionContext,
   Suggestion,
   TranscriptEntry,
   Verbosity,
 } from '@/types'
+
+// Rate limit state for dev mode
+interface RateLimitState {
+  devMode: boolean
+  rpm: number
+  bufferSeconds: number
+  status: 'idle' | 'queued' | 'executing' | 'timeout'
+  queuePosition: number
+  estimatedWait: number
+}
 
 interface SessionState {
   // Connection state
@@ -30,9 +41,13 @@ interface SessionState {
   // Settings
   verbosity: Verbosity
   provider: LLMProvider
+  promptKey: PromptStyle
 
   // Context (not persisted)
   context: SessionContext
+
+  // Rate limiting state (dev mode)
+  rateLimit: RateLimitState
 
   // Actions
   setStatus: (status: ConnectionStatus) => void
@@ -45,7 +60,9 @@ interface SessionState {
   addSuggestion: (suggestion: Suggestion) => void  // Add to suggestions array
   setVerbosity: (verbosity: Verbosity) => void
   setProvider: (provider: LLMProvider) => void
+  setPromptKey: (promptKey: PromptStyle) => void
   setContext: (context: Partial<SessionContext>) => void
+  setRateLimitStatus: (status: Partial<RateLimitState>) => void
   reset: () => void
 }
 
@@ -53,6 +70,15 @@ const initialContext: SessionContext = {
   jobDescription: '',
   resume: '',
   workExperience: '',
+}
+
+const initialRateLimit: RateLimitState = {
+  devMode: false,
+  rpm: 4,
+  bufferSeconds: 10,
+  status: 'idle',
+  queuePosition: 0,
+  estimatedWait: 0,
 }
 
 export const useSessionStore = create<SessionState>((set) => ({
@@ -66,8 +92,10 @@ export const useSessionStore = create<SessionState>((set) => ({
   transcript: [],
   suggestions: [],  // All suggestions persist during session
   verbosity: 'moderate',
-  provider: 'gemini',  // Default to Gemini for free tier access
+  provider: 'adaptive',  // Default to Adaptive (Groq) for ultra-fast responses
+  promptKey: 'candidate',  // Default to candidate mode (first-person, tactical)
   context: { ...initialContext },
+  rateLimit: { ...initialRateLimit },
 
   // Actions
   setStatus: (status) => set({ status }),
@@ -102,9 +130,16 @@ export const useSessionStore = create<SessionState>((set) => ({
 
   setProvider: (provider) => set({ provider }),
 
+  setPromptKey: (promptKey) => set({ promptKey }),
+
   setContext: (context) =>
     set((state) => ({
       context: { ...state.context, ...context },
+    })),
+
+  setRateLimitStatus: (rateLimitUpdate) =>
+    set((state) => ({
+      rateLimit: { ...state.rateLimit, ...rateLimitUpdate },
     })),
 
   reset: () =>
@@ -117,5 +152,6 @@ export const useSessionStore = create<SessionState>((set) => ({
       systemActive: false,
       transcript: [],
       suggestions: [],  // Only clear on session end
+      rateLimit: { ...initialRateLimit },
     }),
 }))

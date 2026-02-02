@@ -10,61 +10,23 @@ import websockets
 from websockets.client import WebSocketClientProtocol
 
 from config import settings
+from services.prompts import get_prompt, DEFAULT_PROMPT
 
 logger = logging.getLogger(__name__)
 
 OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview"
 
-SYSTEM_INSTRUCTIONS_TEMPLATE = """
-You are a Passive Interview Co-Pilot. Your role is to assist the candidate during a live interview by providing relevant suggestions ONLY when you detect a question from the interviewer.
-
-## Core Behavior:
-1. ONLY respond when the interviewer asks a QUESTION
-2. NEVER respond to the candidate's own statements or answers
-3. NEVER interrupt with unsolicited advice
-4. If you detect small talk or non-questions, remain silent
-
-## Response Style ({verbosity}):
-{verbosity_instructions}
-
-## Response Format:
-When you detect a question, respond with:
-1. **Suggested Response**: A direct answer suggestion
-2. **Key Points**: 2-3 bullet points to mention
-3. **If They Ask More**: One follow-up tip if the interviewer digs deeper
-
-## Context Provided:
-
-### Job Description:
-{job_description}
-
-### Candidate Resume:
-{resume}
-
-### Work Experience Details:
-{work_experience}
-
-## Important:
-- Reference SPECIFIC details from the candidate's experience
-- Use numbers and metrics when available
-- Keep suggestions natural and conversational
-- Adapt tone to match the interview style (technical vs behavioral)
-"""
-
-VERBOSITY_INSTRUCTIONS = {
-    "concise": "Keep responses under 2 sentences. Bullet points only. No elaboration.",
-    "moderate": "Provide 2-3 sentence suggestions with supporting points. Balanced detail.",
-    "detailed": "Give comprehensive suggestions with full context, examples, and structure.",
-}
+# Legacy prompt templates - now using prompts.py module as source of truth
+# These are kept for backwards compatibility but get_prompt() should be used
 
 
 def get_max_tokens(verbosity: str) -> int:
     """Get max response tokens based on verbosity setting."""
     return {
-        "concise": 150,
-        "moderate": 300,
-        "detailed": 500,
-    }.get(verbosity, 300)
+        "concise": 200,
+        "moderate": 400,
+        "detailed": 600,
+    }.get(verbosity, 400)
 
 
 def build_instructions(
@@ -72,18 +34,26 @@ def build_instructions(
     resume: str,
     work_experience: str,
     verbosity: str = "moderate",
+    prompt_key: str = None,
 ) -> str:
-    """Build the system instructions with user context."""
-    verbosity_instructions = VERBOSITY_INSTRUCTIONS.get(
-        verbosity, VERBOSITY_INSTRUCTIONS["moderate"]
-    )
+    """Build the system instructions with user context.
 
-    return SYSTEM_INSTRUCTIONS_TEMPLATE.format(
+    Args:
+        job_description: The job being interviewed for
+        resume: Candidate's resume
+        work_experience: Additional experience details
+        verbosity: Response length (concise/moderate/detailed)
+        prompt_key: Which prompt style to use (candidate/coach/star)
+
+    Returns:
+        Formatted system prompt string
+    """
+    return get_prompt(
+        prompt_key=prompt_key,
+        job_description=job_description,
+        resume=resume,
+        work_experience=work_experience,
         verbosity=verbosity,
-        verbosity_instructions=verbosity_instructions,
-        job_description=job_description or "(Not provided)",
-        resume=resume or "(Not provided)",
-        work_experience=work_experience or "(Not provided)",
     )
 
 
@@ -93,6 +63,7 @@ class OpenAIRealtimeClient:
     def __init__(self):
         self._ws: Optional[WebSocketClientProtocol] = None
         self._connected = False
+        self._prompt_key = DEFAULT_PROMPT
 
     @property
     def is_connected(self) -> bool:
@@ -105,8 +76,17 @@ class OpenAIRealtimeClient:
         resume: str = "",
         work_experience: str = "",
         verbosity: str = "moderate",
+        prompt_key: str = None,
     ) -> bool:
-        """Establish connection to OpenAI Realtime API."""
+        """Establish connection to OpenAI Realtime API.
+
+        Args:
+            job_description: The job being interviewed for
+            resume: Candidate's resume
+            work_experience: Additional experience details
+            verbosity: Response length (concise/moderate/detailed)
+            prompt_key: Which prompt style to use (candidate/coach/star)
+        """
         try:
             headers = {
                 "Authorization": f"Bearer {settings.openai_api_key}",
@@ -118,13 +98,14 @@ class OpenAIRealtimeClient:
                 extra_headers=headers,
             )
             self._connected = True
+            self._prompt_key = prompt_key or DEFAULT_PROMPT
 
             # Send session configuration
             await self._send_session_update(
-                job_description, resume, work_experience, verbosity
+                job_description, resume, work_experience, verbosity, prompt_key
             )
 
-            logger.info("Connected to OpenAI Realtime API")
+            logger.info(f"Connected to OpenAI Realtime API (prompt: {self._prompt_key})")
             return True
 
         except Exception as e:
@@ -138,13 +119,14 @@ class OpenAIRealtimeClient:
         resume: str,
         work_experience: str,
         verbosity: str,
+        prompt_key: str = None,
     ) -> None:
         """Send session.update to configure the session."""
         if not self._ws:
             return
 
         instructions = build_instructions(
-            job_description, resume, work_experience, verbosity
+            job_description, resume, work_experience, verbosity, prompt_key
         )
 
         session_config = {
@@ -302,12 +284,14 @@ class MockOpenAIClient:
         resume: str = "",
         work_experience: str = "",
         verbosity: str = "moderate",
+        prompt_key: str = None,
     ) -> bool:
         """Simulate connection to OpenAI."""
         self._connected = True
         self._running = True
         self._verbosity = verbosity
-        logger.info("[MOCK] Connected to Mock OpenAI client")
+        self._prompt_key = prompt_key or DEFAULT_PROMPT
+        logger.info(f"[MOCK] Connected to Mock OpenAI client (prompt: {self._prompt_key})")
         return True
 
     async def send_audio(self, audio_data: bytes) -> None:
@@ -405,11 +389,15 @@ def get_llm_client(provider: str = None):
     """Factory function to get the appropriate LLM client based on provider.
 
     Args:
-        provider: The LLM provider to use ('openai', 'gemini', or 'mock').
-                 If None, uses the configured default from settings.
+        provider: The LLM provider to use:
+            - 'adaptive': Groq Whisper + Llama (fastest, recommended)
+            - 'gemini-live': Gemini Live API (real-time WebSocket)
+            - 'gemini': Standard Gemini (batch mode)
+            - 'openai': OpenAI Realtime API
+            - 'mock': Demo mode (no API key needed)
 
     Returns:
-        An LLM client instance (OpenAIRealtimeClient, GeminiClient, or MockOpenAIClient).
+        An LLM client instance.
     """
     # Determine which provider to use
     if provider is None:
@@ -420,19 +408,44 @@ def get_llm_client(provider: str = None):
     if provider == "mock":
         logger.info("Using Mock client")
         return MockOpenAIClient()
-    elif provider == "gemini":
-        # Import here to avoid circular imports and allow graceful fallback
+
+    elif provider == "adaptive":
+        # Adaptive: Groq Whisper + Llama (ultra-fast)
+        try:
+            from services.groq_client import GroqAdaptiveClient
+            logger.info("Using Adaptive client (Groq Whisper + Llama)")
+            return GroqAdaptiveClient()
+        except ImportError as e:
+            logger.error(f"Failed to import GroqAdaptiveClient: {e}")
+            logger.warning("Falling back to Gemini")
+            provider = "gemini"
+
+    elif provider == "gemini-live":
+        # Gemini Live API - real-time WebSocket streaming
+        try:
+            from services.gemini_live_client import GeminiLiveClient
+            logger.info("Using Gemini Live API client (real-time streaming)")
+            return GeminiLiveClient()
+        except ImportError as e:
+            logger.error(f"Failed to import GeminiLiveClient: {e}")
+            logger.warning("Falling back to standard Gemini client")
+            provider = "gemini"
+
+    if provider == "gemini":
+        # Standard Gemini API - batch processing
         try:
             from services.gemini_client import GeminiClient
-            logger.info("Using Gemini API client")
+            logger.info("Using Gemini API client (batch mode)")
             return GeminiClient()
         except ImportError as e:
             logger.error(f"Failed to import GeminiClient: {e}")
             logger.warning("Falling back to Mock client")
             return MockOpenAIClient()
+
     elif provider == "openai":
         logger.info("Using OpenAI Realtime API client")
         return OpenAIRealtimeClient()
+
     else:
         logger.warning(f"Unknown provider '{provider}', falling back to Mock client")
         return MockOpenAIClient()

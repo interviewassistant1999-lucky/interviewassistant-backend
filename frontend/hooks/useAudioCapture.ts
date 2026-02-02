@@ -3,6 +3,19 @@
 import { useCallback, useRef, useState } from 'react'
 import { useSessionStore } from '@/stores/sessionStore'
 
+interface AudioChunkData {
+  data: ArrayBuffer
+  speaker: 'user' | 'interviewer'
+  // Speech timing for Option B1 turn detection
+  isSpeaking: boolean  // Whether speech is currently active
+  silenceDurationMs: number  // How long silence has lasted (accurate)
+}
+
+interface SpeechTimingData {
+  isSpeaking: boolean
+  silenceDurationMs: number
+}
+
 interface AudioCaptureResult {
   startCapture: () => Promise<boolean>
   stopCapture: () => void
@@ -11,7 +24,9 @@ interface AudioCaptureResult {
 }
 
 export function useAudioCapture(
-  onAudioData?: (data: ArrayBuffer) => void
+  onAudioData?: (data: ArrayBuffer) => void,
+  onAudioChunk?: (chunk: AudioChunkData) => void,
+  onSpeechTiming?: (timing: SpeechTimingData) => void
 ): AudioCaptureResult {
   const [isCapturing, setIsCapturing] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -103,13 +118,33 @@ export function useAudioCapture(
 
       // Handle audio data from worklet
       workletNode.port.onmessage = (event) => {
-        if (event.data.type === 'audio' && onAudioData) {
-          onAudioData(event.data.data)
+        if (event.data.type === 'audio') {
+          // Call legacy callback for backwards compatibility
+          if (onAudioData) {
+            onAudioData(event.data.data)
+          }
+          // Call new callback with speaker info and speech timing
+          if (onAudioChunk) {
+            onAudioChunk({
+              data: event.data.data,
+              speaker: event.data.speaker || 'interviewer',
+              isSpeaking: event.data.isSpeaking ?? true,
+              silenceDurationMs: event.data.silenceDurationMs || 0,
+            })
+          }
         } else if (event.data.type === 'levels') {
           setAudioLevels(event.data.mic, event.data.system)
           // Debug: Log levels occasionally
           if (Math.random() < 0.01) {
             console.log(`Audio levels - Mic: ${(event.data.mic * 100).toFixed(1)}%, System: ${(event.data.system * 100).toFixed(1)}%`)
+          }
+        } else if (event.data.type === 'speechTiming') {
+          // Periodic speech timing updates for accurate turn detection
+          if (onSpeechTiming) {
+            onSpeechTiming({
+              isSpeaking: event.data.isSpeaking,
+              silenceDurationMs: event.data.silenceDurationMs,
+            })
           }
         }
       }
@@ -136,7 +171,7 @@ export function useAudioCapture(
       stopCapture()
       return false
     }
-  }, [onAudioData, setMicActive, setSystemActive, setAudioLevels])
+  }, [onAudioData, onAudioChunk, onSpeechTiming, setMicActive, setSystemActive, setAudioLevels])
 
   const stopCapture = useCallback(() => {
     // Stop all tracks

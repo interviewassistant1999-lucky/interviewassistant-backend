@@ -16,12 +16,14 @@ export function useWebSocket() {
     addTranscriptEntry,
     updateTranscriptEntry,
     addSuggestion,
+    setRateLimitStatus,
   } = useSessionStore()
 
   const handleMessage = useCallback(
     (event: MessageEvent) => {
       try {
         const message: ServerMessage = JSON.parse(event.data)
+        console.log('[WS] Received message:', message.type, message)
 
         switch (message.type) {
           case 'session.ready':
@@ -29,12 +31,14 @@ export function useWebSocket() {
             break
 
           case 'transcript.delta': {
+            console.log('[WS] Adding TRANSCRIPT entry:', message)
             const entry: TranscriptEntry = {
               id: message.id,
               timestamp: new Date(),
               speaker: message.speaker,
               text: message.text,
               isFinal: message.isFinal,
+              isNewTurn: message.isNewTurn,
             }
 
             // Check if we need to update or add
@@ -50,6 +54,7 @@ export function useWebSocket() {
           }
 
           case 'suggestion': {
+            console.log('[WS] Adding SUGGESTION:', message)
             const suggestion: Suggestion = {
               id: message.id,
               timestamp: new Date(),
@@ -84,12 +89,32 @@ export function useWebSocket() {
               setStatus('error')
             }
             break
+
+          // Rate limit status messages (dev mode)
+          case 'rate_limit.status':
+            // Initial status from backend
+            setRateLimitStatus({
+              devMode: message.dev_mode,
+              rpm: message.rpm,
+              bufferSeconds: message.buffer_seconds,
+            })
+            console.log('Rate limit mode enabled:', message)
+            break
+
+          case 'rate_limit.update':
+            // Status updates during session
+            setRateLimitStatus({
+              status: message.status,
+              queuePosition: message.queue_position || 0,
+              estimatedWait: message.estimated_wait || 0,
+            })
+            break
         }
       } catch (error) {
         console.error('Error parsing message:', error)
       }
     },
-    [setStatus, setLatency, addTranscriptEntry, updateTranscriptEntry, addSuggestion]
+    [setStatus, setLatency, addTranscriptEntry, updateTranscriptEntry, addSuggestion, setRateLimitStatus]
   )
 
   const connect = useCallback(() => {

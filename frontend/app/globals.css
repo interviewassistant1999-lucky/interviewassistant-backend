@@ -96,3 +96,51 @@ body {
 .animate-pulse-border {
   animation: pulse-border 2s ease-in-out;
 }
+
+/* Suggestion panel entrance animation */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fadeIn {
+  animation: fadeIn 0.3s ease-out forwards;
+}
+
+/* Custom scrollbar for suggestion panel */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 4px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 2px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+/* Subtle glow effect for active suggestion */
+@keyframes subtleGlow {
+  0%, 100% {
+    box-shadow: 0 0 20px rgba(16, 185, 129, 0.05);
+  }
+  50% {
+    box-shadow: 0 0 30px rgba(16, 185, 129, 0.1);
+  }
+}
+
+.suggestion-glow {
+  animation: subtleGlow 3s ease-in-out infinite;
+}

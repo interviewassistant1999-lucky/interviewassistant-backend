@@ -84,6 +84,7 @@ export function useSuggestionBroadcaster() {
 export function useSuggestionReceiver() {
   const channelRef = useRef<BroadcastChannel | null>(null)
   const [suggestions, setSuggestions] = useState<Suggestion[]>([])
+  const [sessionEnded, setSessionEnded] = useState(false)
 
   useEffect(() => {
     // Create broadcast channel
@@ -96,8 +97,8 @@ export function useSuggestionReceiver() {
           setSuggestions(event.data.suggestions)
         }
       } else if (event.data.type === 'session-ended') {
-        // Close the overlay window when session ends
-        window.close()
+        // Don't auto-close - let user review the session content
+        setSessionEnded(true)
       }
     }
 
@@ -109,5 +110,5 @@ export function useSuggestionReceiver() {
     }
   }, [])
 
-  return { suggestions }
+  return { suggestions, sessionEnded }
 }

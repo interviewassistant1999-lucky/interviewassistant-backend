@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     encryption_key: Optional[str] = None  # Generate with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 
     # LLM Provider configuration
-    llm_provider: Literal["openai", "gemini", "mock"] = "mock"
+    llm_provider: Literal["openai", "gemini", "adaptive", "mock"] = "mock"
 
     # OpenAI settings
     openai_api_key: str = ""
