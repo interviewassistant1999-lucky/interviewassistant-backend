@@ -914,10 +914,64 @@ email-validator>=2.0.0
 - **Dashboard layout**: Sidebar + main content pattern works well for settings-heavy apps
 ---
 
+## 2026-02-02 - Feature: Session Persistence, WebSocket Auth, and User API Keys
+- **What was implemented**: Three major production features:
+  1. **Session Persistence**: Transcripts and suggestions are now saved to the database when sessions end
+  2. **WebSocket Authentication**: JWT token is passed to WebSocket for user identification
+  3. **User API Keys**: Users must add their own API keys in Settings to start sessions
+
+### Session Persistence
+- Sessions are saved to `InterviewSession` table on session end or WebSocket disconnect
+- Stores: user_id, transcript (JSON), suggestions (JSON), duration, provider, context
+- Dashboard sessions page now shows actual session history from database
+
+### WebSocket Authentication
+- Frontend passes JWT token as query parameter: `ws://...?token=xxx`
+- Backend authenticates token and stores user_id in ConnectionState
+- Sessions are linked to authenticated users for history tracking
+
+### User API Key Requirement
+- Before starting a session, checks if user has an API key for the selected provider
+- Frontend shows error with link to Settings if no key found
+- Backend also validates and returns API_KEY_MISSING error as safety net
+- User's encrypted API key is decrypted and passed to LLM client instead of server's key
+
+**Files changed**:
+- `backend/routers/websocket.py`:
+  - Added `authenticate_websocket()` for JWT auth
+  - Added `get_user_api_key()` to fetch user's decrypted key
+  - Added `save_session_to_db()` to persist sessions
+  - Updated `ConnectionState` with user tracking fields
+  - Updated `handle_session_start()` to require user API key
+  - Updated `handle_session_end()` to save before clearing
+  - Updated `cleanup_connection()` to save on disconnect
+- `backend/services/openai_relay.py`:
+  - `get_llm_client()` now accepts optional `api_key` parameter
+  - `OpenAIRealtimeClient` accepts `api_key` in constructor
+- `backend/services/groq_client.py`:
+  - `GroqAdaptiveClient` accepts `api_key` in constructor
+  - Uses user's key or falls back to server's key
+- `backend/services/gemini_client.py`:
+  - `GeminiClient` accepts `api_key` in constructor
+- `frontend/hooks/useWebSocket.ts`:
+  - Passes JWT token as query parameter in WebSocket URL
+- `frontend/app/interview/page.tsx`:
+  - Checks for API key before starting session
+  - Shows error message with link to Settings if no key
+  - Requires authentication to start session
+
+**Learnings for future iterations**:
+- WebSocket auth can use query params since headers aren't standard
+- Always save session data both on explicit end AND on disconnect
+- Frontend API key check improves UX by catching errors early
+- Backend check is still needed as safety net
+- Use `AsyncSessionLocal()` context manager for DB operations in WebSocket handlers
+---
+
 ## Future Scope (Updated)
-- **Session Persistence**: Save interview sessions to database when completed (transcript, suggestions, duration)
-- **WebSocket Authentication**: Send JWT token with WebSocket connections for authenticated sessions
-- **Use Stored API Keys**: Read user's stored API keys for LLM providers during sessions
+- ~~**Session Persistence**: Save interview sessions to database when completed~~ ✅ DONE
+- ~~**WebSocket Authentication**: Send JWT token with WebSocket connections~~ ✅ DONE
+- ~~**Use Stored API Keys**: Read user's stored API keys for LLM providers~~ ✅ DONE
 - **Live Usage Counter**: Show remaining time during free tier sessions
 - **Email Verification**: Verify email on signup before allowing sessions
 - **Password Reset**: Forgot password flow with email link
@@ -1000,13 +1054,142 @@ frontend/
 ### Data Flow
 1. **User lands on `/`** → Marketing landing page
 2. **User signs up/logs in** → JWT token stored in localStorage
-3. **User starts interview** → `/interview` with dark theme
-4. **Audio captured** → AudioWorklet merges mic + system audio
-5. **Audio sent via WebSocket** → Backend relays to LLM provider
-6. **Transcription returned** → Displayed in real-time transcript
-7. **Turn completed** → AI generates suggestion
-8. **Session ends** → Data saved (future: to database)
-9. **User reviews in dashboard** → `/dashboard/sessions`
+3. **User adds API key** → `/dashboard/settings` (required before starting)
+4. **User starts interview** → `/interview` (checks for API key first)
+5. **WebSocket connects** → JWT token passed as query param for auth
+6. **Audio captured** → AudioWorklet merges mic + system audio
+7. **Audio sent via WebSocket** → Backend uses user's API key for LLM
+8. **Transcription returned** → Displayed in real-time, accumulated for DB
+9. **Turn completed** → AI generates suggestion, accumulated for DB
+10. **Session ends** → Transcript & suggestions saved to database
+11. **User reviews in dashboard** → `/dashboard/sessions` shows history
+
+---
+
+## 2026-02-04 - E2E Testing Session: BUG-001 Fix (Auth Hydration Race Condition)
+
+### Session Overview
+- **Purpose**: E2E testing of Interview Assistant application
+- **Test Configuration**: Groq (Adaptive) provider with API key
+- **Goal**: Test interviewer audio transcription and AI suggestions
+
+### Critical Bug Found and Fixed: BUG-001
+
+**Problem**: Auth hydration race condition causing premature logout on navigation to /interview page
+
+**Root Cause Analysis**:
+1. User navigates to `/interview` page
+2. React component mounts and `useEffect` runs `loadApiKeys()` immediately
+3. Zustand store hasn't hydrated from localStorage yet (async process)
+4. `fetchWithAuth` reads `token` from Zustand state - it's `null` (not hydrated)
+5. API request sent without Authorization header → 401 Unauthorized
+6. `fetchWithAuth` sees 401 and calls `logout()` as a side effect
+7. `logout()` CLEARS the token from localStorage (destructive!)
+8. Now even localStorage is empty - user is fully logged out
+9. Subsequent hydration finds empty localStorage - permanently logged out
+
+**Fix Implemented (3-part solution)**:
+
+**1. authStore.ts - Add hydration tracking**:
+```typescript
+interface AuthState {
+  // ... existing fields
+  _hasHydrated: boolean  // Track if store has hydrated from localStorage
+  setHasHydrated: (hasHydrated: boolean) => void
+}
+
+// In persist config:
+onRehydrateStorage: () => (state) => {
+  state?.setHasHydrated(true)
+},
+```
+
+**2. useAuth.ts - Conditional logout on 401**:
+```typescript
+if (response.status === 401) {
+  // Only logout if we actually had a token (avoid logout during hydration)
+  if (token) {
+    logout()
+  }
+  throw new Error('Session expired')
+}
+```
+
+**3. interview/page.tsx - Wait for hydration before API calls**:
+```typescript
+const { isAuthenticated, _hasHydrated } = useAuthStore()
+
+useEffect(() => {
+  const loadApiKeys = async () => {
+    if (!_hasHydrated) return  // Wait for hydration
+    if (!isAuthenticated) return
+    // ... rest of loading logic
+  }
+  loadApiKeys()
+}, [isAuthenticated, _hasHydrated, fetchWithAuth])
+```
+
+### CORS Configuration Update
+Extended CORS origins to support multiple development ports (3000-3005):
+
+**backend/main.py** - Hardcoded CORS origins:
+```python
+CORS_ORIGINS = [
+    "http://localhost:3000",
+    "http://localhost:3001",
+    "http://localhost:3002",
+    "http://localhost:3003",
+    "http://localhost:3004",
+    "http://localhost:3005",
+]
+```
+
+### Files Changed
+1. `frontend/stores/authStore.ts` - Added `_hasHydrated` state, `setHasHydrated` action, `onRehydrateStorage` callback
+2. `frontend/hooks/useAuth.ts` - Conditional logout only when token exists
+3. `frontend/app/interview/page.tsx` - Wait for hydration before API calls
+4. `backend/main.py` - Hardcoded CORS origins for testing
+5. `backend/config.py` - Extended default CORS origins
+
+### Commit
+```
+2fd2ead fix: Resolve auth hydration race condition causing premature logout
+```
+
+### Documentation Created
+- `openBugs.md` - Bug tracking with BUG-001 marked as FIXED
+- `sessionSummary.md` - Session context for continuity
+
+### Testing Infrastructure Notes
+- **Browser Automation Issue**: Playwright browser server consistently crashes on Windows with "Target page, context or browser has been closed" error
+- **Workaround**: Manual browser testing recommended for verification
+
+### Pending Tasks for Next Session
+1. **Manual verification** of BUG-001 fix in browser
+2. **Continue E2E testing**:
+   - Start interview session
+   - Screen share YouTube mock interview (1:58-3:20)
+   - Verify transcription works
+   - Verify AI suggestions appear with minimal latency
+3. **Test Groq API** with configured key
+
+### Server Commands (for next session)
+```bash
+# Kill zombie processes
+taskkill //F //IM python.exe
+
+# Start backend
+cd backend && python -m uvicorn main:app --host 0.0.0.0 --port 8000
+
+# Start frontend
+cd frontend && npm run dev
+```
+
+### Learnings for Future Iterations
+- **Zustand hydration timing**: Always wait for `_hasHydrated` before making authenticated API calls after page navigation
+- **Destructive logout**: Never call `logout()` on 401 if token is null - it means hydration hasn't completed
+- **CORS hardcoding**: For development, hardcode CORS origins in `main.py` to avoid environment variable loading issues
+- **Browser automation on Windows**: Playwright persistent browser contexts may have issues; consider Extension Mode or manual testing
 
 ---
 
