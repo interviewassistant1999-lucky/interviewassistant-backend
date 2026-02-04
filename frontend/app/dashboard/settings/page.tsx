@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import { useAuth } from '@/hooks/useAuth'
 
 interface APIKeyInfo {
@@ -41,7 +41,7 @@ export default function SettingsPage() {
   const [newKey, setNewKey] = useState('')
   const [isSaving, setIsSaving] = useState(false)
 
-  const loadApiKeys = async () => {
+  const loadApiKeys = useCallback(async () => {
     try {
       const response = await fetchWithAuth('/api/settings/api-keys')
       if (!response.ok) {
@@ -58,11 +58,11 @@ export default function SettingsPage() {
     } finally {
       setIsLoading(false)
     }
-  }
+  }, [fetchWithAuth])
 
   useEffect(() => {
     loadApiKeys()
-  }, [])
+  }, [loadApiKeys])
 
   const handleSaveKey = async (provider: string) => {
     if (!newKey.trim()) return
@@ -82,10 +82,25 @@ export default function SettingsPage() {
         throw new Error(data.detail || 'Failed to save API key')
       }
 
+      // Optimistically update local state with masked key
+      const maskedKey = newKey.slice(0, 4) + '****' + newKey.slice(-4)
+      const now = new Date().toISOString()
+      setApiKeys((prev) => {
+        const existing = prev.find((k) => k.provider === provider)
+        if (existing) {
+          return prev.map((k) =>
+            k.provider === provider ? { ...k, masked_key: maskedKey, updated_at: now } : k
+          )
+        }
+        return [...prev, { provider, masked_key: maskedKey, created_at: now, updated_at: now }]
+      })
+
       setSuccess(`${PROVIDER_INFO[provider as keyof typeof PROVIDER_INFO]?.name || provider} API key saved successfully`)
       setEditingProvider(null)
       setNewKey('')
-      await loadApiKeys()
+
+      // Also reload from server to get accurate masked key format
+      loadApiKeys()
 
       setTimeout(() => setSuccess(null), 3000)
     } catch (err) {

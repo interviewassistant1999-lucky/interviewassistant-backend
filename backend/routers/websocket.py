@@ -6,9 +6,12 @@ import logging
 import re
 import time
 import uuid
+from datetime import datetime
 from typing import Any, List, Optional, Tuple
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.messages import (
     ConnectionStatusMessage,
@@ -21,6 +24,10 @@ from models.messages import (
 from config import settings
 from services.openai_relay import get_openai_client, get_llm_client
 from services.session_manager import session_manager
+from services.auth_service import auth_service
+from services.encryption import decrypt_api_key
+from db.database import AsyncSessionLocal
+from db.models import User, InterviewSession, UserAPIKey, LLMProvider
 
 logger = logging.getLogger(__name__)
 
@@ -179,15 +186,110 @@ class ConnectionState:
         self.silence_before_speech_ms: float = 0.0  # Captured silence duration before speech resumed
         self.was_speaking: bool = True  # Track previous speaking state to detect transitions
 
+        # User authentication
+        self.user_id: Optional[str] = None  # Authenticated user ID
+        self.user_api_key: Optional[str] = None  # User's decrypted API key for the provider
+
+        # Database session tracking
+        self.db_session_id: Optional[str] = None  # ID of InterviewSession in database
+        self.session_start_time: Optional[datetime] = None
+        self.provider_used: Optional[str] = None
+
+        # Accumulated transcript and suggestions for saving to DB
+        self.transcript_entries: List[dict] = []
+        self.suggestion_entries: List[dict] = []
+        self.context: dict = {}  # Job description, resume, etc.
+
+
+async def authenticate_websocket(token: Optional[str]) -> Optional[str]:
+    """Authenticate WebSocket connection using JWT token.
+
+    Args:
+        token: JWT token from query params
+
+    Returns:
+        User ID if valid, None otherwise
+    """
+    if not token:
+        return None
+
+    user_id = auth_service.decode_token(token)
+    if not user_id:
+        return None
+
+    # Verify user exists
+    async with AsyncSessionLocal() as db:
+        user = await auth_service.get_user_by_id(db, user_id)
+        if not user:
+            return None
+
+    return user_id
+
+
+async def get_user_api_key(user_id: str, provider: str) -> Optional[str]:
+    """Get user's decrypted API key for a provider.
+
+    Args:
+        user_id: The user's ID
+        provider: LLM provider name (groq, openai, gemini)
+
+    Returns:
+        Decrypted API key or None if not found
+    """
+    try:
+        # Map provider names to enum
+        provider_map = {
+            'adaptive': LLMProvider.GROQ,
+            'groq': LLMProvider.GROQ,
+            'openai': LLMProvider.OPENAI,
+            'gemini': LLMProvider.GEMINI,
+        }
+
+        llm_provider = provider_map.get(provider.lower())
+        if not llm_provider:
+            return None
+
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(UserAPIKey)
+                .where(UserAPIKey.user_id == user_id)
+                .where(UserAPIKey.provider == llm_provider)
+            )
+            key_record = result.scalar_one_or_none()
+
+            if key_record and settings.encryption_key:
+                return decrypt_api_key(key_record.encrypted_key)
+
+    except Exception as e:
+        logger.error(f"[WS] Error getting user API key: {e}")
+
+    return None
+
 
 @router.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
-    """Main WebSocket endpoint for interview sessions."""
+async def websocket_endpoint(websocket: WebSocket, token: Optional[str] = Query(None)):
+    """Main WebSocket endpoint for interview sessions.
+
+    Args:
+        websocket: The WebSocket connection
+        token: Optional JWT token for authentication
+    """
     logger.info("[WS] ===== New WebSocket connection =====")
     await websocket.accept()
     logger.info("[WS] WebSocket accepted")
     state = ConnectionState(websocket)
     audio_message_count = 0
+
+    # Authenticate if token provided
+    if token:
+        user_id = await authenticate_websocket(token)
+        if user_id:
+            state.user_id = user_id
+            logger.info(f"[WS] Authenticated user: {user_id}")
+        else:
+            logger.warning("[WS] Invalid authentication token")
+    else:
+        logger.info("[WS] No authentication token provided (anonymous session)")
 
     try:
         while True:
@@ -266,8 +368,32 @@ async def handle_session_start(state: ConnectionState, data: dict) -> None:
     logger.info(f"[SESSION] Context - Job desc: {len(context.get('jobDescription', ''))} chars")
     logger.info(f"[SESSION] Context - Resume: {len(context.get('resume', ''))} chars")
     logger.info(f"[SESSION] Context - Work exp: {len(context.get('workExperience', ''))} chars")
+    logger.info(f"[SESSION] User ID: {state.user_id or 'anonymous'}")
 
-    # Create session
+    # Store context for later database saving
+    state.context = context
+    state.provider_used = provider
+    state.session_start_time = datetime.utcnow()
+
+    # Get user's API key if authenticated
+    user_api_key = None
+    if state.user_id and provider and provider.lower() != 'mock':
+        user_api_key = await get_user_api_key(state.user_id, provider)
+        if user_api_key:
+            state.user_api_key = user_api_key
+            logger.info(f"[SESSION] Using user's {provider} API key")
+        else:
+            # User doesn't have an API key for this provider
+            logger.warning(f"[SESSION] User has no API key for {provider}")
+            error_msg = ErrorMessage(
+                code="API_KEY_MISSING",
+                message=f"No API key found for {provider}. Please add your API key in Settings.",
+                recoverable=False,
+            )
+            await state.websocket.send_text(error_msg.model_dump_json())
+            return
+
+    # Create in-memory session
     session = session_manager.create_session(
         job_description=context.get("jobDescription", ""),
         resume=context.get("resume", ""),
@@ -277,9 +403,9 @@ async def handle_session_start(state: ConnectionState, data: dict) -> None:
     state.session_id = session.id
     logger.info(f"[SESSION] Session created: {session.id}")
 
-    # Connect to LLM provider (OpenAI, Gemini, Adaptive, or Mock)
+    # Connect to LLM provider with user's API key
     logger.info(f"[SESSION] Getting LLM client...")
-    state.openai_client = get_llm_client(provider)
+    state.openai_client = get_llm_client(provider, api_key=user_api_key)
     provider_name = provider or "default"
     logger.info(f"[SESSION] LLM client obtained: {type(state.openai_client).__name__}")
 
@@ -322,11 +448,69 @@ async def handle_session_start(state: ConnectionState, data: dict) -> None:
         await state.websocket.send_text(error_msg.model_dump_json())
 
 
+async def save_session_to_db(state: ConnectionState) -> Optional[str]:
+    """Save session data to the database.
+
+    Args:
+        state: Connection state with session data
+
+    Returns:
+        Database session ID or None if failed
+    """
+    if not state.user_id:
+        logger.info("[SESSION] Skipping DB save - no authenticated user")
+        return None
+
+    if not state.transcript_entries and not state.suggestion_entries:
+        logger.info("[SESSION] Skipping DB save - no content to save")
+        return None
+
+    try:
+        async with AsyncSessionLocal() as db:
+            # Calculate duration
+            duration_seconds = 0
+            if state.session_start_time:
+                duration_seconds = int((datetime.utcnow() - state.session_start_time).total_seconds())
+
+            # Create database session record
+            db_session = InterviewSession(
+                user_id=state.user_id,
+                job_description=state.context.get("jobDescription"),
+                resume=state.context.get("resume"),
+                work_experience=state.context.get("workExperience"),
+                transcript=state.transcript_entries,
+                suggestions=state.suggestion_entries,
+                duration_seconds=duration_seconds,
+                provider_used=state.provider_used,
+                created_at=state.session_start_time or datetime.utcnow(),
+                ended_at=datetime.utcnow(),
+            )
+            db.add(db_session)
+            await db.commit()
+
+            logger.info(f"[SESSION] Saved to database: {db_session.id} ({len(state.transcript_entries)} transcripts, {len(state.suggestion_entries)} suggestions, {duration_seconds}s)")
+            return db_session.id
+
+    except Exception as e:
+        logger.error(f"[SESSION] Failed to save to database: {e}")
+        import traceback
+        logger.error(f"[SESSION] Traceback:\n{traceback.format_exc()}")
+        return None
+
+
 async def handle_session_end(state: ConnectionState) -> None:
     """End the current session."""
+    logger.info(f"[SESSION] Ending session: {state.session_id}")
+
+    # Save session to database before clearing
+    if state.user_id and (state.transcript_entries or state.suggestion_entries):
+        db_session_id = await save_session_to_db(state)
+        if db_session_id:
+            state.db_session_id = db_session_id
+
     if state.session_id:
         session_manager.clear_session(state.session_id)
-        logger.info(f"Session ended: {state.session_id}")
+        logger.info(f"[SESSION] In-memory session cleared: {state.session_id}")
 
     if state.openai_client:
         await state.openai_client.disconnect()
@@ -481,6 +665,15 @@ async def receive_from_openai(state: ConnectionState) -> None:
                     )
                     logger.info(f"[WS-RECV] Transcript added to session (speaker: {speaker}, newTurn: {is_new_turn})")
 
+                # Accumulate for database saving
+                state.transcript_entries.append({
+                    "id": entry_id,
+                    "speaker": speaker,
+                    "text": transcript,
+                    "timestamp": current_time,
+                    "isNewTurn": is_new_turn,
+                })
+
                 # Send to client
                 delta_msg = TranscriptDeltaMessage(
                     id=entry_id,
@@ -510,8 +703,9 @@ async def receive_from_openai(state: ConnectionState) -> None:
                     response, key_points, follow_up = parse_suggestion_response(text)
                     logger.info(f"[WS-RECV] Parsed suggestion: response={len(response)} chars, {len(key_points)} key points, follow_up={len(follow_up)} chars")
 
+                    suggestion_id = str(uuid.uuid4())
                     suggestion_msg = SuggestionMessage(
-                        id=str(uuid.uuid4()),
+                        id=suggestion_id,
                         response=response,
                         keyPoints=key_points,
                         followUp=follow_up,
@@ -519,6 +713,15 @@ async def receive_from_openai(state: ConnectionState) -> None:
                     logger.info(f"[WS-RECV] Sending suggestion to client WebSocket...")
                     await state.websocket.send_text(suggestion_msg.model_dump_json())
                     logger.info(f"[WS-RECV] Suggestion SENT to client!")
+
+                    # Accumulate for database saving
+                    state.suggestion_entries.append({
+                        "id": suggestion_id,
+                        "response": response,
+                        "keyPoints": key_points,
+                        "followUp": follow_up,
+                        "timestamp": time.time(),
+                    })
                 current_transcript_id = None
 
             elif event_type == "error":
@@ -546,6 +749,12 @@ async def receive_from_openai(state: ConnectionState) -> None:
 
 async def cleanup_connection(state: ConnectionState) -> None:
     """Clean up connection resources."""
+    # Save session to database if not already saved
+    if state.user_id and state.session_id and not state.db_session_id:
+        if state.transcript_entries or state.suggestion_entries:
+            logger.info("[WS] Saving session on disconnect...")
+            await save_session_to_db(state)
+
     if state.receive_task:
         state.receive_task.cancel()
         try:

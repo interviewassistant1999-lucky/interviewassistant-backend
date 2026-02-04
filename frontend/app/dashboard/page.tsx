@@ -1,15 +1,93 @@
 'use client'
 
+import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { useAuthStore } from '@/stores/authStore'
+import { useAuth } from '@/hooks/useAuth'
+
+interface SessionSummary {
+  id: string
+  duration_seconds: number
+  created_at: string
+}
+
+interface DashboardStats {
+  totalSessions: number
+  totalMinutes: number
+  thisWeekSessions: number
+  thisWeekMinutes: number
+}
 
 export default function DashboardPage() {
   const { user } = useAuthStore()
+  const { fetchWithAuth } = useAuth()
+  const [stats, setStats] = useState<DashboardStats>({
+    totalSessions: 0,
+    totalMinutes: 0,
+    thisWeekSessions: 0,
+    thisWeekMinutes: 0,
+  })
+  const [isLoading, setIsLoading] = useState(true)
 
-  const stats = [
-    { label: 'Total Sessions', value: '0', change: '+0 this week' },
-    { label: 'Practice Time', value: '0 min', change: '+0 min this week' },
-    { label: 'Questions Answered', value: '0', change: '+0 this week' },
+  useEffect(() => {
+    const loadStats = async () => {
+      try {
+        const response = await fetchWithAuth('/api/sessions')
+        if (!response.ok) return
+
+        const sessions: SessionSummary[] = await response.json()
+
+        // Calculate stats
+        const now = new Date()
+        const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
+
+        let totalMinutes = 0
+        let thisWeekSessions = 0
+        let thisWeekMinutes = 0
+
+        sessions.forEach((session) => {
+          const mins = Math.floor(session.duration_seconds / 60)
+          totalMinutes += mins
+
+          const sessionDate = new Date(session.created_at)
+          if (sessionDate >= weekAgo) {
+            thisWeekSessions++
+            thisWeekMinutes += mins
+          }
+        })
+
+        setStats({
+          totalSessions: sessions.length,
+          totalMinutes,
+          thisWeekSessions,
+          thisWeekMinutes,
+        })
+      } catch (err) {
+        console.error('Failed to load stats:', err)
+      } finally {
+        setIsLoading(false)
+      }
+    }
+
+    loadStats()
+  }, [fetchWithAuth])
+
+  const displayStats = [
+    {
+      label: 'Total Sessions',
+      value: isLoading ? '...' : stats.totalSessions.toString(),
+      change: `+${stats.thisWeekSessions} this week`,
+    },
+    {
+      label: 'Practice Time',
+      value: isLoading ? '...' : `${stats.totalMinutes} min`,
+      change: `+${stats.thisWeekMinutes} min this week`,
+    },
+    {
+      label: 'Sessions This Week',
+      value: isLoading ? '...' : stats.thisWeekSessions.toString(),
+      change: 'Keep practicing!',
+    },
   ]
 
   return (
@@ -25,7 +103,7 @@ export default function DashboardPage() {
 
       {/* Stats */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-        {stats.map((stat) => (
+        {displayStats.map((stat) => (
           <div key={stat.label} className="bg-white rounded-xl p-6 shadow-sm border border-slate-200">
             <p className="text-sm text-slate-500">{stat.label}</p>
             <p className="text-3xl font-bold text-slate-900 mt-2">{stat.value}</p>

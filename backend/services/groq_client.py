@@ -239,7 +239,13 @@ class GroqAdaptiveClient:
     - Avoids false triggers from connective words and incomplete sentences
     """
 
-    def __init__(self):
+    def __init__(self, api_key: str = None):
+        """Initialize the Groq Adaptive client.
+
+        Args:
+            api_key: Optional Groq API key. If not provided, uses server's key from settings.
+        """
+        self._api_key = api_key  # User's API key or None
         self._connected = False
         self._transcription_client: Optional[GroqTranscriptionClient] = None
         self._llm_client: Optional[GroqLLMClient] = None
@@ -313,7 +319,8 @@ class GroqAdaptiveClient:
             prompt_key: Which prompt style to use (candidate/coach/star)
         """
         try:
-            groq_api_key = settings.groq_api_key
+            # Use user's API key if provided, otherwise fall back to server's key
+            groq_api_key = self._api_key or settings.groq_api_key
 
             if not groq_api_key:
                 logger.error("[GROQ-ADAPTIVE] No GROQ_API_KEY configured")

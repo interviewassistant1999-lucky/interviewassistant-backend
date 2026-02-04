@@ -60,7 +60,13 @@ def build_instructions(
 class OpenAIRealtimeClient:
     """Client for OpenAI Realtime API."""
 
-    def __init__(self):
+    def __init__(self, api_key: str = None):
+        """Initialize the OpenAI Realtime client.
+
+        Args:
+            api_key: Optional OpenAI API key. If not provided, uses server's key from settings.
+        """
+        self._api_key = api_key  # User's API key or None
         self._ws: Optional[WebSocketClientProtocol] = None
         self._connected = False
         self._prompt_key = DEFAULT_PROMPT
@@ -88,8 +94,10 @@ class OpenAIRealtimeClient:
             prompt_key: Which prompt style to use (candidate/coach/star)
         """
         try:
+            # Use user's API key if provided, otherwise fall back to server's key
+            api_key = self._api_key or settings.openai_api_key
             headers = {
-                "Authorization": f"Bearer {settings.openai_api_key}",
+                "Authorization": f"Bearer {api_key}",
                 "OpenAI-Beta": "realtime=v1",
             }
 
@@ -385,7 +393,7 @@ def get_openai_client():
         return OpenAIRealtimeClient()
 
 
-def get_llm_client(provider: str = None):
+def get_llm_client(provider: str = None, api_key: str = None):
     """Factory function to get the appropriate LLM client based on provider.
 
     Args:
@@ -395,6 +403,7 @@ def get_llm_client(provider: str = None):
             - 'gemini': Standard Gemini (batch mode)
             - 'openai': OpenAI Realtime API
             - 'mock': Demo mode (no API key needed)
+        api_key: Optional API key to use instead of server's default
 
     Returns:
         An LLM client instance.
@@ -414,7 +423,7 @@ def get_llm_client(provider: str = None):
         try:
             from services.groq_client import GroqAdaptiveClient
             logger.info("Using Adaptive client (Groq Whisper + Llama)")
-            return GroqAdaptiveClient()
+            return GroqAdaptiveClient(api_key=api_key)
         except ImportError as e:
             logger.error(f"Failed to import GroqAdaptiveClient: {e}")
             logger.warning("Falling back to Gemini")
@@ -425,7 +434,7 @@ def get_llm_client(provider: str = None):
         try:
             from services.gemini_live_client import GeminiLiveClient
             logger.info("Using Gemini Live API client (real-time streaming)")
-            return GeminiLiveClient()
+            return GeminiLiveClient(api_key=api_key)
         except ImportError as e:
             logger.error(f"Failed to import GeminiLiveClient: {e}")
             logger.warning("Falling back to standard Gemini client")
@@ -436,7 +445,7 @@ def get_llm_client(provider: str = None):
         try:
             from services.gemini_client import GeminiClient
             logger.info("Using Gemini API client (batch mode)")
-            return GeminiClient()
+            return GeminiClient(api_key=api_key)
         except ImportError as e:
             logger.error(f"Failed to import GeminiClient: {e}")
             logger.warning("Falling back to Mock client")
@@ -444,7 +453,7 @@ def get_llm_client(provider: str = None):
 
     elif provider == "openai":
         logger.info("Using OpenAI Realtime API client")
-        return OpenAIRealtimeClient()
+        return OpenAIRealtimeClient(api_key=api_key)
 
     else:
         logger.warning(f"Unknown provider '{provider}', falling back to Mock client")

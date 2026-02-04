@@ -115,8 +115,14 @@ class GeminiClient:
     # At 24kHz, 16-bit mono: 48000 bytes = 1 second
     BYTES_PER_SECOND = 48000
 
-    def __init__(self):
+    def __init__(self, api_key: str = None):
+        """Initialize the Gemini client.
+
+        Args:
+            api_key: Optional Gemini API key. If not provided, uses server's key from settings.
+        """
         logger.info("[GEMINI] Initializing GeminiClient")
+        self._api_key = api_key  # User's API key or None
         self._connected = False
         self._model: Optional[genai.GenerativeModel] = None
         self._chat = None
@@ -128,14 +134,14 @@ class GeminiClient:
         self._verbosity = "moderate"
         self._instructions = ""
         self._prompt_key = DEFAULT_PROMPT
-        
+
         # Dev mode / rate limiting configuration
         self._dev_mode = settings.dev_mode
         self._audio_buffer_seconds = settings.audio_buffer_seconds
         # Each chunk is ~4096 samples at 24kHz = ~0.17 seconds
         # Calculate chunks needed for desired buffer size
         self._audio_chunk_threshold = int(self._audio_buffer_seconds / 0.17)
-        
+
         # Rate limiter for API calls
         self._rate_limiter: Optional[RateLimitedExecutor] = None
         self._transcript_cache: Optional[TranscriptCache] = None
@@ -222,8 +228,9 @@ class GeminiClient:
             prompt_key: Which prompt style to use (candidate/coach/star)
         """
         try:
-            # Configure Gemini API
-            genai.configure(api_key=settings.gemini_api_key)
+            # Configure Gemini API - use user's key if provided
+            api_key = self._api_key or settings.gemini_api_key
+            genai.configure(api_key=api_key)
 
             # Store prompt key for later use
             self._prompt_key = prompt_key or DEFAULT_PROMPT

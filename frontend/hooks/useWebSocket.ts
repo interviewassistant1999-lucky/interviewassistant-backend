@@ -2,6 +2,7 @@
 
 import { useCallback, useRef, useEffect } from 'react'
 import { useSessionStore } from '@/stores/sessionStore'
+import { useAuthStore } from '@/stores/authStore'
 import type { ClientMessage, ServerMessage, Suggestion, TranscriptEntry } from '@/types'
 
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8000/ws'
@@ -124,7 +125,11 @@ export function useWebSocket() {
 
     setStatus('connecting')
 
-    const ws = new WebSocket(WS_URL)
+    // Get auth token and pass it as query parameter
+    const token = useAuthStore.getState().token
+    const wsUrl = token ? `${WS_URL}?token=${encodeURIComponent(token)}` : WS_URL
+
+    const ws = new WebSocket(wsUrl)
     wsRef.current = ws
 
     ws.onopen = () => {
