@@ -19,6 +19,7 @@ interface AuthState {
   token: string | null
   isLoading: boolean
   error: string | null
+  _hasHydrated: boolean  // Track if store has hydrated from localStorage
 
   // Actions
   setAuth: (user: User, token: string) => void
@@ -27,6 +28,7 @@ interface AuthState {
   setError: (error: string | null) => void
   logout: () => void
   isAuthenticated: () => boolean
+  setHasHydrated: (hasHydrated: boolean) => void
 }
 
 export const useAuthStore = create<AuthState>()(
@@ -37,6 +39,7 @@ export const useAuthStore = create<AuthState>()(
       token: null,
       isLoading: false,
       error: null,
+      _hasHydrated: false,
 
       // Actions
       setAuth: (user, token) =>
@@ -63,6 +66,8 @@ export const useAuthStore = create<AuthState>()(
         const state = get()
         return !!state.token && !!state.user
       },
+
+      setHasHydrated: (hasHydrated) => set({ _hasHydrated: hasHydrated }),
     }),
     {
       name: 'auth-storage',
@@ -70,6 +75,10 @@ export const useAuthStore = create<AuthState>()(
         user: state.user,
         token: state.token,
       }),
+      onRehydrateStorage: () => (state) => {
+        // Called when hydration completes
+        state?.setHasHydrated(true)
+      },
     }
   )
 )

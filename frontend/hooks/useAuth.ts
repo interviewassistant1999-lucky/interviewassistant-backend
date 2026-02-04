@@ -179,7 +179,11 @@ export function useAuth() {
       })
 
       if (response.status === 401) {
-        logout()
+        // Only logout if we actually had a token (avoid logout during hydration)
+        // When token is null, it means hydration hasn't completed yet
+        if (token) {
+          logout()
+        }
         throw new Error('Session expired')
       }
 

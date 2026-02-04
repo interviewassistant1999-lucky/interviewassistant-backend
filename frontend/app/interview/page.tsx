@@ -1,6 +1,8 @@
 'use client'
 
-import { useState, useCallback, useRef } from 'react'
+import { useState, useCallback, useRef, useEffect } from 'react'
+import { useRouter } from 'next/navigation'
+import Link from 'next/link'
 import { BrowserCheck } from '@/components/BrowserCheck'
 import { Disclaimer } from '@/components/Disclaimer'
 import { ContextInput } from '@/components/ContextInput/ContextInput'
@@ -11,16 +13,64 @@ import { StatusBar } from '@/components/StatusBar/StatusBar'
 import { SplitLayout } from '@/components/Panels/SplitLayout'
 import { SessionControls } from '@/components/Controls/SessionControls'
 import { useSessionStore } from '@/stores/sessionStore'
+import { useAuthStore } from '@/stores/authStore'
 import { useWebSocket } from '@/hooks/useWebSocket'
 import { useAudioCapture } from '@/hooks/useAudioCapture'
 import { useSuggestionBroadcaster } from '@/hooks/useSuggestionBroadcast'
+import { useAuth } from '@/hooks/useAuth'
+
+// Map provider names to API key provider names
+const providerKeyMap: Record<string, string> = {
+  adaptive: 'groq',
+  groq: 'groq',
+  openai: 'openai',
+  gemini: 'gemini',
+}
+
+interface APIKeyInfo {
+  provider: string
+  masked_key: string
+}
 
 export default function Home() {
+  const router = useRouter()
   const [hasAcceptedDisclaimer, setHasAcceptedDisclaimer] = useState(false)
   const [sessionEnded, setSessionEnded] = useState(false)
+  const [apiKeys, setApiKeys] = useState<APIKeyInfo[]>([])
+  const [apiKeyError, setApiKeyError] = useState<string | null>(null)
+  const [isCheckingKey, setIsCheckingKey] = useState(false)
   const { status, context, verbosity, provider, promptKey, transcript, suggestions, reset } = useSessionStore()
+  const { isAuthenticated, _hasHydrated } = useAuthStore()
+  const { fetchWithAuth } = useAuth()
 
   const { connect, disconnect, sendMessage, sendAudio } = useWebSocket()
+
+  // Check if user has API key for current provider
+  const hasApiKeyForProvider = useCallback((providerName: string) => {
+    const keyProvider = providerKeyMap[providerName?.toLowerCase()] || providerName
+    return apiKeys.some((k) => k.provider === keyProvider)
+  }, [apiKeys])
+
+  // Load API keys on mount (after hydration completes)
+  useEffect(() => {
+    const loadApiKeys = async () => {
+      // Wait for Zustand to hydrate from localStorage before making authenticated requests
+      if (!_hasHydrated) return
+      if (!isAuthenticated) return
+
+      try {
+        const response = await fetchWithAuth('/api/settings/api-keys')
+        if (response.ok) {
+          const data = await response.json()
+          setApiKeys(data)
+        }
+      } catch (err) {
+        console.error('Failed to load API keys:', err)
+      }
+    }
+
+    loadApiKeys()
+  }, [isAuthenticated, _hasHydrated, fetchWithAuth])
 
   // Track current speaker to detect changes
   const currentSpeakerRef = useRef<'user' | 'interviewer'>('interviewer')
@@ -78,6 +128,26 @@ export default function Home() {
   const hasSessionContent = transcript.length > 0 || suggestions.length > 0
 
   const handleStart = useCallback(async () => {
+    // Clear any previous errors
+    setApiKeyError(null)
+
+    // Check if user is authenticated
+    if (!isAuthenticated) {
+      setApiKeyError('Please log in to start an interview session.')
+      return
+    }
+
+    // Check if user has API key for selected provider (skip for mock)
+    if (provider && provider.toLowerCase() !== 'mock') {
+      if (!hasApiKeyForProvider(provider)) {
+        const keyProvider = providerKeyMap[provider?.toLowerCase()] || provider
+        setApiKeyError(
+          `No API key found for ${keyProvider}. Please add your API key in Settings to continue.`
+        )
+        return
+      }
+    }
+
     // Clear previous session if any
     if (sessionEnded) {
       reset()
@@ -106,7 +176,7 @@ export default function Home() {
       provider,
       promptKey,
     })
-  }, [connect, startCapture, disconnect, sendMessage, context, verbosity, provider, promptKey, sessionEnded, reset])
+  }, [connect, startCapture, disconnect, sendMessage, context, verbosity, provider, promptKey, sessionEnded, reset, isAuthenticated, hasApiKeyForProvider])
 
   const handleEnd = useCallback(() => {
     // Send session.end message
@@ -130,6 +200,13 @@ export default function Home() {
     reset()
     setSessionEnded(false)
   }, [reset])
+
+  const handleBackToDashboard = useCallback(() => {
+    // Clear session and redirect to dashboard
+    reset()
+    setSessionEnded(false)
+    router.push('/dashboard')
+  }, [reset, router])
 
   return (
     <BrowserCheck>
@@ -180,9 +257,36 @@ export default function Home() {
                   </div>
                 )}
 
+                {apiKeyError && (
+                  <div className="p-4 bg-amber-500/10 border border-amber-500/30 rounded-lg">
+                    <p className="text-amber-300 mb-2">{apiKeyError}</p>
+                    <Link
+                      href="/dashboard/settings"
+                      className="inline-flex items-center gap-2 px-4 py-2 bg-amber-500 hover:bg-amber-600 text-black rounded-lg text-sm font-medium transition-colors"
+                    >
+                      <span>→</span>
+                      Go to Settings
+                    </Link>
+                  </div>
+                )}
+
+                {!isAuthenticated && (
+                  <div className="p-4 bg-blue-500/10 border border-blue-500/30 rounded-lg">
+                    <p className="text-blue-300 mb-2">Please log in to start an interview session.</p>
+                    <Link
+                      href="/login"
+                      className="inline-flex items-center gap-2 px-4 py-2 bg-blue-500 hover:bg-blue-600 text-white rounded-lg text-sm font-medium transition-colors"
+                    >
+                      <span>→</span>
+                      Log In
+                    </Link>
+                  </div>
+                )}
+
                 <button
                   onClick={handleStart}
-                  className="w-full py-4 px-6 bg-accent-green hover:bg-green-600 rounded-lg font-semibold text-lg transition-colors flex items-center justify-center gap-2"
+                  disabled={!isAuthenticated}
+                  className="w-full py-4 px-6 bg-accent-green hover:bg-green-600 disabled:bg-gray-600 disabled:cursor-not-allowed rounded-lg font-semibold text-lg transition-colors flex items-center justify-center gap-2"
                 >
                   <span className="text-xl">▶</span>
                   Start Interview Session
@@ -199,15 +303,22 @@ export default function Home() {
               {!sessionEnded ? (
                 <SessionControls onStart={handleStart} onEnd={handleEnd} />
               ) : (
-                // Session ended - show back to home button
+                // Session ended - show dashboard and new session buttons
                 <div className="px-6 py-4 border-t border-border bg-bg-secondary">
                   <div className="max-w-3xl mx-auto flex items-center justify-center gap-4">
                     <button
-                      onClick={handleNewSession}
-                      className="flex-1 max-w-md py-3 px-6 bg-accent-blue hover:bg-blue-600 rounded-lg font-semibold transition-colors flex items-center justify-center gap-2"
+                      onClick={handleBackToDashboard}
+                      className="flex-1 max-w-xs py-3 px-6 bg-accent-blue hover:bg-blue-600 rounded-lg font-semibold transition-colors flex items-center justify-center gap-2"
                     >
                       <span>←</span>
-                      Back to Home
+                      Go to Dashboard
+                    </button>
+                    <button
+                      onClick={handleNewSession}
+                      className="flex-1 max-w-xs py-3 px-6 bg-accent-green hover:bg-green-600 rounded-lg font-semibold transition-colors flex items-center justify-center gap-2"
+                    >
+                      <span>+</span>
+                      New Session
                     </button>
                   </div>
                 </div>

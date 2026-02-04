@@ -53,7 +53,7 @@ class Settings(BaseSettings):
     speech_silence_threshold_ms: int = 3000  # Silence duration to consider new turn (ms) - for B1
 
     # General settings
-    allowed_origins: str = "http://localhost:3000"
+    allowed_origins: str = "http://localhost:3000,http://localhost:3001,http://localhost:3002,http://localhost:3003"
 
     # Legacy setting for backwards compatibility
     use_mock_openai: bool = True  # Deprecated: use llm_provider instead
