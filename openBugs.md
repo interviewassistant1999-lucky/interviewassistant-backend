@@ -127,6 +127,33 @@ All three fixes were implemented:
 
 ---
 
+### BUG-003: bcrypt/passlib Incompatibility with Python 3.14 (FIXED)
+**Severity**: Critical - Blocks login functionality
+**Status**: ✅ FIXED (2026-02-04)
+**Steps to Reproduce**:
+1. Install bcrypt 5.0.0 with passlib 1.7.4
+2. Try to login with any account
+
+**Expected**: Login should work
+**Actual**: 500 Internal Server Error with traceback:
+```
+AttributeError: module 'bcrypt' has no attribute '__about__'
+ValueError: password cannot be longer than 72 bytes
+```
+
+**Root Cause**:
+- passlib 1.7.4 is incompatible with bcrypt 5.0.0
+- passlib tries to access `_bcrypt.__about__.__version__` which doesn't exist in newer bcrypt
+
+**Fix Applied**:
+```bash
+pip install bcrypt==4.0.1
+```
+
+**Note**: Any accounts created with bcrypt 5.0.0 may have corrupt password hashes. New accounts need to be created after the fix.
+
+---
+
 ## Missing Features
 
 *(Missing features will be logged during testing)*
@@ -135,32 +162,46 @@ All three fixes were implemented:
 
 ## Test Results Summary
 
-### Testing Completed
+### Testing Completed (E2E Session: 2026-02-04)
 | Test | Status | Notes |
 |------|--------|-------|
 | Landing Page | ✅ PASS | Loads correctly, navigation works |
 | Signup Flow | ✅ PASS | Creates account successfully |
-| Login Flow | ✅ PASS | Authenticates and stores JWT |
-| Dashboard | ✅ PASS | Shows user stats and navigation |
-| Settings - API Keys | ✅ PASS | Can add/save Groq API key |
-| Interview Page Load | ❌ FAIL | Auth hydration race condition (BUG-001) |
-| Start Interview Session | ❌ BLOCKED | Cannot test due to BUG-001 |
-| Audio Transcription | ❌ BLOCKED | Cannot test due to BUG-001 |
-| AI Suggestions | ❌ BLOCKED | Cannot test due to BUG-001 |
+| Login Flow | ✅ PASS | Authenticates and stores JWT (after BUG-003 fix) |
+| Dashboard | ✅ PASS | Shows user stats, quick actions, sidebar navigation |
+| Settings - API Keys | ✅ PASS | Can add/save/update Groq API key |
+| Interview Page Load | ✅ PASS | **BUG-001 VERIFIED FIXED** - No session expired error |
+| Interview Setup UI | ✅ PASS | All options visible: Provider, Response Style, Verbosity |
+| Start Interview Session | ⏳ MANUAL | Requires screen share permission (browser limitation) |
+| Audio Transcription | ⏳ MANUAL | Requires screen share with YouTube video |
+| AI Suggestions | ⏳ MANUAL | Requires full interview flow |
+
+### Manual Testing Required
+The following tests require manual browser testing due to Playwright limitations with media permissions:
+
+1. **Start Interview Session**
+   - Open http://localhost:3000/interview
+   - Accept disclaimer
+   - Fill in job description and resume (optional)
+   - Select Adaptive (Groq) provider
+   - Click "Start Interview Session"
+   - Grant screen share permission (select YouTube tab with audio)
+
+2. **Test with YouTube Mock Interview**
+   - URL: https://www.youtube.com/watch?v=srw4r3htm4U&t=188s
+   - Time range: 1:58 - 3:20
+   - Play the video while screen sharing
+   - Verify: Transcript appears in real-time
+   - Verify: AI suggestions generate after interviewer finishes speaking
 
 ### Testing Limitations
 1. **Browser Automation**: Cannot grant microphone/screen share permissions programmatically
-2. **Zustand Hydration**: Race condition prevents testing authenticated flows after navigation
-3. **Audio Testing**: Would require manual testing with real audio input
-
-### Critical Path to Enable Full Testing
-1. Fix BUG-001 (Auth Hydration Race Condition) - **BLOCKER**
-2. Manual test or use Extension Mode to grant permissions
-3. Test with YouTube mock interview video for audio input
+2. **Playwright on Windows**: Persistent browser contexts occasionally crash
 
 ### Bugs Found
 | ID | Severity | Description | Status |
 |----|----------|-------------|--------|
 | BUG-001 | **CRITICAL** | Auth hydration race condition causes logout on page navigation | ✅ FIXED |
 | BUG-002 | Minor | Disclaimer button needs JS click (may be Playwright-specific) | Open |
+| BUG-003 | **CRITICAL** | bcrypt 5.0.0 incompatible with passlib 1.7.4 | ✅ FIXED |
 
