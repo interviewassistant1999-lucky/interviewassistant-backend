@@ -8,8 +8,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from config import settings
-from routers import websocket, auth, sessions, user_settings, billing
+from routers import websocket, auth, sessions, user_settings, billing, interview_prep
 from db.database import init_db, close_db
+from services.mongodb_service import init_mongodb, close_mongodb
 
 # Configure logging to show all INFO+ messages
 logging.basicConfig(
@@ -35,10 +36,14 @@ async def lifespan(app: FastAPI):
     logger.info("Initializing database...")
     await init_db()
     logger.info("Database initialized")
+    logger.info("Initializing MongoDB...")
+    await init_mongodb()
+    logger.info("MongoDB initialization complete")
     yield
     # Shutdown
     logger.info("Closing database connections...")
     await close_db()
+    await close_mongodb()
     logger.info("Database connections closed")
 
 
@@ -71,6 +76,7 @@ app.include_router(auth.router)
 app.include_router(sessions.router)
 app.include_router(user_settings.router)
 app.include_router(billing.router)
+app.include_router(interview_prep.router)
 app.include_router(websocket.router)
 
 

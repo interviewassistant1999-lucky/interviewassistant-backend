@@ -106,6 +106,8 @@ class GeminiLiveClient:
         resume: str = "",
         work_experience: str = "",
         verbosity: str = "moderate",
+        prompt_key: str = None,
+        pre_prepared_answers: str = "",
     ) -> bool:
         """Initialize connection to Gemini Live API."""
         try:

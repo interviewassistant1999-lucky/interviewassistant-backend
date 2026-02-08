@@ -52,6 +52,10 @@ class Settings(BaseSettings):
     use_speech_timing_for_turns: bool = True  # True = B1 (VAD timing), False = A (transcript timing)
     speech_silence_threshold_ms: int = 3000  # Silence duration to consider new turn (ms) - for B1
 
+    # MongoDB settings (for interview question bank)
+    mongodb_uri: Optional[str] = None
+    mongodb_db_name: str = "interview_assistant"
+
     # General settings
     allowed_origins: str = "http://localhost:3000,http://localhost:3001,http://localhost:3002,http://localhost:3003"
 

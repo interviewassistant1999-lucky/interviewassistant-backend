@@ -212,6 +212,39 @@ def get_prompt(
     )
 
 
+def get_prompt_with_prep(
+    prompt_key: str = None,
+    job_description: str = "",
+    resume: str = "",
+    work_experience: str = "",
+    verbosity: str = "moderate",
+    pre_prepared_answers: str = "",
+) -> str:
+    """Get a formatted system prompt with pre-prepared answers appended.
+
+    Args:
+        prompt_key: Key from PROMPT_REGISTRY
+        job_description: The job description for context
+        resume: The candidate's resume
+        work_experience: Additional work experience details
+        verbosity: Response verbosity level
+        pre_prepared_answers: Formatted string of pre-prepared Q&A pairs
+
+    Returns:
+        Formatted system prompt with prep answers appended
+    """
+    base = get_prompt(
+        prompt_key=prompt_key,
+        job_description=job_description,
+        resume=resume,
+        work_experience=work_experience,
+        verbosity=verbosity,
+    )
+    if pre_prepared_answers:
+        return base + "\n" + pre_prepared_answers
+    return base
+
+
 def get_response_format(prompt_key: str = None) -> str:
     """Get the response format type for a prompt.
 

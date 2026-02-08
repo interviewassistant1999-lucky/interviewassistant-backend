@@ -43,6 +43,15 @@ class LLMProvider(str, enum.Enum):
     GROQ = "groq"
 
 
+class InterviewRound(str, enum.Enum):
+    """Interview round types."""
+    BEHAVIORAL = "behavioral"
+    TECHNICAL = "technical"
+    SYSTEM_DESIGN = "system_design"
+    SCREENING = "screening"
+    CULTURE_FIT = "culture_fit"
+
+
 class User(Base):
     """User account model."""
     __tablename__ = "users"
@@ -100,6 +109,8 @@ class InterviewSession(Base):
     job_description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     resume: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     work_experience: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    company_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    round_type: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     transcript: Mapped[Optional[dict]] = mapped_column(SQLiteJSON, nullable=True, default=list)
     suggestions: Mapped[Optional[dict]] = mapped_column(SQLiteJSON, nullable=True, default=list)
     duration_seconds: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
@@ -111,6 +122,11 @@ class InterviewSession(Base):
     user: Mapped["User"] = relationship("User", back_populates="sessions")
     usage_records: Mapped[List["UsageRecord"]] = relationship(
         "UsageRecord",
+        back_populates="session",
+        cascade="all, delete-orphan"
+    )
+    approved_answers: Mapped[List["ApprovedAnswer"]] = relationship(
+        "ApprovedAnswer",
         back_populates="session",
         cascade="all, delete-orphan"
     )
@@ -196,3 +212,34 @@ class Payment(Base):
 
     def __repr__(self) -> str:
         return f"<Payment(id={self.id}, amount={self.amount}, status={self.status})>"
+
+
+class ApprovedAnswer(Base):
+    """Pre-prepared approved answers for interview questions."""
+    __tablename__ = "approved_answers"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False, index=True)
+    session_id: Mapped[Optional[str]] = mapped_column(
+        String(36),
+        ForeignKey("interview_sessions.id"),
+        nullable=True,
+        index=True
+    )
+    question_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)  # MongoDB question ID
+    question_text: Mapped[str] = mapped_column(Text, nullable=False)
+    company_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    round_type: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    answer_data: Mapped[Optional[dict]] = mapped_column(SQLiteJSON, nullable=True)
+    is_approved: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+    # Relationships
+    user: Mapped["User"] = relationship("User")
+    session: Mapped[Optional["InterviewSession"]] = relationship(
+        "InterviewSession",
+        back_populates="approved_answers"
+    )
+
+    def __repr__(self) -> str:
+        return f"<ApprovedAnswer(id={self.id}, question={self.question_text[:50]})>"

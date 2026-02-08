@@ -19,7 +19,7 @@ from typing import Optional
 import httpx
 
 from config import settings
-from services.prompts import get_prompt, get_response_format, format_suggestion_for_display, DEFAULT_PROMPT
+from services.prompts import get_prompt, get_prompt_with_prep, get_response_format, format_suggestion_for_display, DEFAULT_PROMPT
 from services.turn_detector import TurnDetector, TurnDetectorConfig
 
 logger = logging.getLogger(__name__)
@@ -146,6 +146,7 @@ class GroqLLMClient:
         work_experience: str = "",
         verbosity: str = "moderate",
         prompt_key: str = None,
+        pre_prepared_answers: str = "",
     ):
         """Set the system prompt with interview context.
 
@@ -155,14 +156,16 @@ class GroqLLMClient:
             work_experience: Additional experience details
             verbosity: Response length (concise/moderate/detailed)
             prompt_key: Which prompt to use (candidate/coach/star)
+            pre_prepared_answers: Formatted pre-prepared Q&A to append to prompt
         """
         self._prompt_key = prompt_key or DEFAULT_PROMPT
-        self._system_prompt = get_prompt(
+        self._system_prompt = get_prompt_with_prep(
             prompt_key=self._prompt_key,
             job_description=job_description[:2000] if job_description else "",
             resume=resume[:2000] if resume else "",
             work_experience=work_experience[:2000] if work_experience else "",
             verbosity=verbosity,
+            pre_prepared_answers=pre_prepared_answers,
         )
 
     async def get_suggestion(self, transcript: str) -> Optional[dict]:
@@ -308,6 +311,7 @@ class GroqAdaptiveClient:
         work_experience: str = "",
         verbosity: str = "moderate",
         prompt_key: str = None,
+        pre_prepared_answers: str = "",
     ) -> bool:
         """Initialize Groq clients.
 
@@ -317,6 +321,7 @@ class GroqAdaptiveClient:
             work_experience: Additional experience details
             verbosity: Response length (concise/moderate/detailed)
             prompt_key: Which prompt style to use (candidate/coach/star)
+            pre_prepared_answers: Formatted pre-prepared Q&A to append to prompt
         """
         try:
             # Use user's API key if provided, otherwise fall back to server's key
@@ -337,6 +342,7 @@ class GroqAdaptiveClient:
                 work_experience=work_experience,
                 verbosity=verbosity,
                 prompt_key=prompt_key,
+                pre_prepared_answers=pre_prepared_answers,
             )
 
             # Initialize semantic turn detector (if enabled)

@@ -361,6 +361,7 @@ async def handle_session_start(state: ConnectionState, data: dict) -> None:
     verbosity = data.get("verbosity", "moderate")
     provider = data.get("provider")  # Can be 'openai', 'gemini', 'adaptive', or 'mock'
     prompt_key = data.get("promptKey")  # Can be 'candidate', 'coach', or 'star'
+    prepared_answers = data.get("preparedAnswers", "")  # Pre-prepared Q&A prompt injection
 
     logger.info(f"[SESSION] Provider requested: {provider}")
     logger.info(f"[SESSION] Prompt style: {prompt_key or 'default (candidate)'}")
@@ -368,6 +369,7 @@ async def handle_session_start(state: ConnectionState, data: dict) -> None:
     logger.info(f"[SESSION] Context - Job desc: {len(context.get('jobDescription', ''))} chars")
     logger.info(f"[SESSION] Context - Resume: {len(context.get('resume', ''))} chars")
     logger.info(f"[SESSION] Context - Work exp: {len(context.get('workExperience', ''))} chars")
+    logger.info(f"[SESSION] Pre-prepared answers: {len(prepared_answers)} chars")
     logger.info(f"[SESSION] User ID: {state.user_id or 'anonymous'}")
 
     # Store context for later database saving
@@ -416,6 +418,7 @@ async def handle_session_start(state: ConnectionState, data: dict) -> None:
         work_experience=session.context.work_experience,
         verbosity=verbosity,
         prompt_key=prompt_key,
+        pre_prepared_answers=prepared_answers,
     )
     logger.info(f"[SESSION] LLM connection result: {connected}")
 

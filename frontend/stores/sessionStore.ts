@@ -5,8 +5,11 @@
 import { create } from 'zustand'
 import type {
   ConnectionStatus,
+  InterviewQuestion,
+  InterviewRound,
   LLMProvider,
   PromptStyle,
+  QuestionAnswerPair,
   SessionContext,
   Suggestion,
   TranscriptEntry,
@@ -49,6 +52,18 @@ interface SessionState {
   // Rate limiting state (dev mode)
   rateLimit: RateLimitState
 
+  // Interview prep state
+  prepStep: number  // 0 = no prep, 1 = context, 2 = review
+  companyName: string
+  roundType: InterviewRound | ''
+  resumeFile: File | null
+  resumeParsedText: string
+  questions: InterviewQuestion[]
+  qaPairs: QuestionAnswerPair[]
+  prepLoading: boolean
+  prepError: string | null
+  promptInjection: string  // Formatted pre-prepared answers for system prompt
+
   // Actions
   setStatus: (status: ConnectionStatus) => void
   setLatency: (ms: number) => void
@@ -63,6 +78,17 @@ interface SessionState {
   setPromptKey: (promptKey: PromptStyle) => void
   setContext: (context: Partial<SessionContext>) => void
   setRateLimitStatus: (status: Partial<RateLimitState>) => void
+  setPrepStep: (step: number) => void
+  setCompanyName: (name: string) => void
+  setRoundType: (round: InterviewRound | '') => void
+  setResumeFile: (file: File | null) => void
+  setResumeParsedText: (text: string) => void
+  setQuestions: (questions: InterviewQuestion[]) => void
+  setQaPairs: (pairs: QuestionAnswerPair[]) => void
+  updateQaPair: (index: number, pair: Partial<QuestionAnswerPair>) => void
+  setPrepLoading: (loading: boolean) => void
+  setPrepError: (error: string | null) => void
+  setPromptInjection: (injection: string) => void
   reset: () => void
 }
 
@@ -96,6 +122,18 @@ export const useSessionStore = create<SessionState>((set) => ({
   promptKey: 'candidate',  // Default to candidate mode (first-person, tactical)
   context: { ...initialContext },
   rateLimit: { ...initialRateLimit },
+
+  // Interview prep initial state
+  prepStep: 1,
+  companyName: '',
+  roundType: '',
+  resumeFile: null,
+  resumeParsedText: '',
+  questions: [],
+  qaPairs: [],
+  prepLoading: false,
+  prepError: null,
+  promptInjection: '',
 
   // Actions
   setStatus: (status) => set({ status }),
@@ -142,6 +180,24 @@ export const useSessionStore = create<SessionState>((set) => ({
       rateLimit: { ...state.rateLimit, ...rateLimitUpdate },
     })),
 
+  // Prep actions
+  setPrepStep: (prepStep) => set({ prepStep }),
+  setCompanyName: (companyName) => set({ companyName }),
+  setRoundType: (roundType) => set({ roundType }),
+  setResumeFile: (resumeFile) => set({ resumeFile }),
+  setResumeParsedText: (resumeParsedText) => set({ resumeParsedText }),
+  setQuestions: (questions) => set({ questions }),
+  setQaPairs: (qaPairs) => set({ qaPairs }),
+  updateQaPair: (index, updates) =>
+    set((state) => ({
+      qaPairs: state.qaPairs.map((pair, i) =>
+        i === index ? { ...pair, ...updates } : pair
+      ),
+    })),
+  setPrepLoading: (prepLoading) => set({ prepLoading }),
+  setPrepError: (prepError) => set({ prepError }),
+  setPromptInjection: (promptInjection) => set({ promptInjection }),
+
   reset: () =>
     set({
       status: 'idle',
@@ -153,5 +209,15 @@ export const useSessionStore = create<SessionState>((set) => ({
       transcript: [],
       suggestions: [],  // Only clear on session end
       rateLimit: { ...initialRateLimit },
+      prepStep: 1,
+      companyName: '',
+      roundType: '',
+      resumeFile: null,
+      resumeParsedText: '',
+      questions: [],
+      qaPairs: [],
+      prepLoading: false,
+      prepError: null,
+      promptInjection: '',
     }),
 }))

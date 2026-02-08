@@ -10,7 +10,7 @@ import websockets
 from websockets.client import WebSocketClientProtocol
 
 from config import settings
-from services.prompts import get_prompt, DEFAULT_PROMPT
+from services.prompts import get_prompt, get_prompt_with_prep, DEFAULT_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +35,7 @@ def build_instructions(
     work_experience: str,
     verbosity: str = "moderate",
     prompt_key: str = None,
+    pre_prepared_answers: str = "",
 ) -> str:
     """Build the system instructions with user context.
 
@@ -44,16 +45,18 @@ def build_instructions(
         work_experience: Additional experience details
         verbosity: Response length (concise/moderate/detailed)
         prompt_key: Which prompt style to use (candidate/coach/star)
+        pre_prepared_answers: Formatted pre-prepared Q&A to append
 
     Returns:
         Formatted system prompt string
     """
-    return get_prompt(
+    return get_prompt_with_prep(
         prompt_key=prompt_key,
         job_description=job_description,
         resume=resume,
         work_experience=work_experience,
         verbosity=verbosity,
+        pre_prepared_answers=pre_prepared_answers,
     )
 
 
@@ -83,6 +86,7 @@ class OpenAIRealtimeClient:
         work_experience: str = "",
         verbosity: str = "moderate",
         prompt_key: str = None,
+        pre_prepared_answers: str = "",
     ) -> bool:
         """Establish connection to OpenAI Realtime API.
 
@@ -92,6 +96,7 @@ class OpenAIRealtimeClient:
             work_experience: Additional experience details
             verbosity: Response length (concise/moderate/detailed)
             prompt_key: Which prompt style to use (candidate/coach/star)
+            pre_prepared_answers: Formatted pre-prepared Q&A to append to prompt
         """
         try:
             # Use user's API key if provided, otherwise fall back to server's key
@@ -110,7 +115,7 @@ class OpenAIRealtimeClient:
 
             # Send session configuration
             await self._send_session_update(
-                job_description, resume, work_experience, verbosity, prompt_key
+                job_description, resume, work_experience, verbosity, prompt_key, pre_prepared_answers
             )
 
             logger.info(f"Connected to OpenAI Realtime API (prompt: {self._prompt_key})")
@@ -128,13 +133,14 @@ class OpenAIRealtimeClient:
         work_experience: str,
         verbosity: str,
         prompt_key: str = None,
+        pre_prepared_answers: str = "",
     ) -> None:
         """Send session.update to configure the session."""
         if not self._ws:
             return
 
         instructions = build_instructions(
-            job_description, resume, work_experience, verbosity, prompt_key
+            job_description, resume, work_experience, verbosity, prompt_key, pre_prepared_answers
         )
 
         session_config = {
@@ -293,6 +299,7 @@ class MockOpenAIClient:
         work_experience: str = "",
         verbosity: str = "moderate",
         prompt_key: str = None,
+        pre_prepared_answers: str = "",
     ) -> bool:
         """Simulate connection to OpenAI."""
         self._connected = True

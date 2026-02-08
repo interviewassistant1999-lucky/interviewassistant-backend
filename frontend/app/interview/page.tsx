@@ -12,6 +12,10 @@ import { PromptStyleSelector } from '@/components/Settings/PromptStyleSelector'
 import { StatusBar } from '@/components/StatusBar/StatusBar'
 import { SplitLayout } from '@/components/Panels/SplitLayout'
 import { SessionControls } from '@/components/Controls/SessionControls'
+import { StepWizard } from '@/components/InterviewPrep/StepWizard'
+import { ResumeUpload } from '@/components/InterviewPrep/ResumeUpload'
+import { RoundSelector } from '@/components/InterviewPrep/RoundSelector'
+import { PrepReview } from '@/components/InterviewPrep/PrepReview'
 import { useSessionStore } from '@/stores/sessionStore'
 import { useAuthStore } from '@/stores/authStore'
 import { useWebSocket } from '@/hooks/useWebSocket'
@@ -39,7 +43,11 @@ export default function Home() {
   const [apiKeys, setApiKeys] = useState<APIKeyInfo[]>([])
   const [apiKeyError, setApiKeyError] = useState<string | null>(null)
   const [isCheckingKey, setIsCheckingKey] = useState(false)
-  const { status, context, verbosity, provider, promptKey, transcript, suggestions, reset } = useSessionStore()
+  const {
+    status, context, verbosity, provider, promptKey, transcript, suggestions,
+    prepStep, companyName, setCompanyName, setPrepStep, promptInjection,
+    reset,
+  } = useSessionStore()
   const { isAuthenticated, _hasHydrated } = useAuthStore()
   const { fetchWithAuth } = useAuth()
 
@@ -164,7 +172,7 @@ export default function Home() {
       return
     }
 
-    // Send session.start message
+    // Send session.start message with preparedAnswers if available
     sendMessage({
       type: 'session.start',
       context: {
@@ -175,8 +183,9 @@ export default function Home() {
       verbosity,
       provider,
       promptKey,
-    })
-  }, [connect, startCapture, disconnect, sendMessage, context, verbosity, provider, promptKey, sessionEnded, reset, isAuthenticated, hasApiKeyForProvider])
+      preparedAnswers: promptInjection || undefined,
+    } as any)
+  }, [connect, startCapture, disconnect, sendMessage, context, verbosity, provider, promptKey, promptInjection, sessionEnded, reset, isAuthenticated, hasApiKeyForProvider])
 
   const handleEnd = useCallback(() => {
     // Send session.end message
@@ -223,7 +232,7 @@ export default function Home() {
                 className="flex items-center gap-2 px-4 py-2 bg-accent-blue hover:bg-blue-600 rounded-lg text-sm font-medium transition-colors"
                 title="Open suggestions in a floating window"
               >
-                <span>↗</span>
+                <span>&#8599;</span>
                 Pop Out Suggestions
               </button>
             )}
@@ -232,7 +241,7 @@ export default function Home() {
           {/* Session Ended Banner */}
           {sessionEnded && (
             <div className="bg-amber-500/10 border-b border-amber-500/30 px-6 py-3 flex items-center justify-between">
-              <span className="text-amber-300 text-sm">Session ended — Review your transcript and suggestions below</span>
+              <span className="text-amber-300 text-sm">Session ended &#8212; Review your transcript and suggestions below</span>
               <button
                 onClick={handleNewSession}
                 className="px-4 py-1.5 bg-accent-blue hover:bg-blue-600 rounded text-sm font-medium transition-colors"
@@ -243,55 +252,120 @@ export default function Home() {
           )}
 
           {!isInSession && !sessionEnded ? (
-            // Setup View
+            // Setup View - 2-Step Wizard
             <div className="flex-1 p-6 max-w-3xl mx-auto w-full">
-              <div className="space-y-8">
-                <ContextInput />
-                <ProviderSelector />
-                <PromptStyleSelector />
-                <VerbositySelector />
+              <StepWizard
+                currentStep={prepStep}
+                totalSteps={2}
+                onBack={() => setPrepStep(prepStep - 1)}
+              />
 
-                {audioError && (
-                  <div className="p-4 bg-accent-red/10 border border-accent-red rounded-lg text-accent-red">
-                    {audioError}
+              {prepStep === 1 && (
+                // Step 1: Context Collection
+                <div className="space-y-6">
+                  <div>
+                    <h2 className="text-xl font-semibold mb-1">Interview Context</h2>
+                    <p className="text-text-secondary text-sm">
+                      Provide context about your interview for personalized question prediction and answer generation.
+                    </p>
                   </div>
-                )}
 
-                {apiKeyError && (
-                  <div className="p-4 bg-amber-500/10 border border-amber-500/30 rounded-lg">
-                    <p className="text-amber-300 mb-2">{apiKeyError}</p>
-                    <Link
-                      href="/dashboard/settings"
-                      className="inline-flex items-center gap-2 px-4 py-2 bg-amber-500 hover:bg-amber-600 text-black rounded-lg text-sm font-medium transition-colors"
-                    >
-                      <span>→</span>
-                      Go to Settings
-                    </Link>
+                  {/* Company Name */}
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-text-primary">Company Name</label>
+                    <input
+                      type="text"
+                      value={companyName}
+                      onChange={(e) => setCompanyName(e.target.value)}
+                      placeholder="e.g., Google, Amazon, Meta..."
+                      className="w-full px-4 py-3 bg-bg-tertiary border border-border rounded-lg text-text-primary placeholder-text-secondary/50 focus:outline-none focus:border-accent-blue text-sm"
+                    />
                   </div>
-                )}
 
-                {!isAuthenticated && (
-                  <div className="p-4 bg-blue-500/10 border border-blue-500/30 rounded-lg">
-                    <p className="text-blue-300 mb-2">Please log in to start an interview session.</p>
-                    <Link
-                      href="/login"
-                      className="inline-flex items-center gap-2 px-4 py-2 bg-blue-500 hover:bg-blue-600 text-white rounded-lg text-sm font-medium transition-colors"
-                    >
-                      <span>→</span>
-                      Log In
-                    </Link>
-                  </div>
-                )}
+                  {/* Round Type */}
+                  <RoundSelector />
 
-                <button
-                  onClick={handleStart}
-                  disabled={!isAuthenticated}
-                  className="w-full py-4 px-6 bg-accent-green hover:bg-green-600 disabled:bg-gray-600 disabled:cursor-not-allowed rounded-lg font-semibold text-lg transition-colors flex items-center justify-center gap-2"
-                >
-                  <span className="text-xl">▶</span>
-                  Start Interview Session
-                </button>
-              </div>
+                  {/* Resume Upload */}
+                  <ResumeUpload />
+
+                  {/* Existing Context Input (JD + Work Experience) */}
+                  <ContextInput />
+
+                  {/* Prompt injection badge if available */}
+                  {promptInjection && (
+                    <div className="p-3 bg-accent-green/10 border border-accent-green/30 rounded-lg flex items-center gap-2">
+                      <span className="text-accent-green text-sm">&#10003;</span>
+                      <span className="text-accent-green text-sm">Pre-prepared answers loaded and ready</span>
+                    </div>
+                  )}
+
+                  <button
+                    onClick={() => setPrepStep(2)}
+                    className="w-full py-3 px-6 bg-accent-blue hover:bg-blue-600 rounded-lg font-semibold text-sm transition-colors"
+                  >
+                    Next: Review Questions & Settings &#8594;
+                  </button>
+                </div>
+              )}
+
+              {prepStep === 2 && (
+                // Step 2: Q&A Review + Provider/Prompt Settings
+                <div className="space-y-6">
+                  {/* Prep Review - fetches questions, generates answers */}
+                  <PrepReview />
+
+                  <hr className="border-border" />
+
+                  {/* Provider/Prompt/Verbosity Settings */}
+                  <ProviderSelector />
+                  <PromptStyleSelector />
+                  <VerbositySelector />
+
+                  {audioError && (
+                    <div className="p-4 bg-accent-red/10 border border-accent-red rounded-lg text-accent-red">
+                      {audioError}
+                    </div>
+                  )}
+
+                  {apiKeyError && (
+                    <div className="p-4 bg-amber-500/10 border border-amber-500/30 rounded-lg">
+                      <p className="text-amber-300 mb-2">{apiKeyError}</p>
+                      <Link
+                        href="/dashboard/settings"
+                        className="inline-flex items-center gap-2 px-4 py-2 bg-amber-500 hover:bg-amber-600 text-black rounded-lg text-sm font-medium transition-colors"
+                      >
+                        <span>&#8594;</span>
+                        Go to Settings
+                      </Link>
+                    </div>
+                  )}
+
+                  {!isAuthenticated && (
+                    <div className="p-4 bg-blue-500/10 border border-blue-500/30 rounded-lg">
+                      <p className="text-blue-300 mb-2">Please log in to start an interview session.</p>
+                      <Link
+                        href="/login"
+                        className="inline-flex items-center gap-2 px-4 py-2 bg-blue-500 hover:bg-blue-600 text-white rounded-lg text-sm font-medium transition-colors"
+                      >
+                        <span>&#8594;</span>
+                        Log In
+                      </Link>
+                    </div>
+                  )}
+
+                  <button
+                    onClick={handleStart}
+                    disabled={!isAuthenticated}
+                    className="w-full py-4 px-6 bg-accent-green hover:bg-green-600 disabled:bg-gray-600 disabled:cursor-not-allowed rounded-lg font-semibold text-lg transition-colors flex items-center justify-center gap-2"
+                  >
+                    <span className="text-xl">&#9654;</span>
+                    Start Interview Session
+                    {promptInjection && (
+                      <span className="text-sm font-normal opacity-75">(with prep)</span>
+                    )}
+                  </button>
+                </div>
+              )}
             </div>
           ) : (
             // Session View (active or ended for review)
@@ -310,7 +384,7 @@ export default function Home() {
                       onClick={handleBackToDashboard}
                       className="flex-1 max-w-xs py-3 px-6 bg-accent-blue hover:bg-blue-600 rounded-lg font-semibold transition-colors flex items-center justify-center gap-2"
                     >
-                      <span>←</span>
+                      <span>&#8592;</span>
                       Go to Dashboard
                     </button>
                     <button

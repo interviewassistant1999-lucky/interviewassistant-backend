@@ -170,6 +170,17 @@ Started: 2025-01-26
 - Mask for display: `key[:3] + "****"` (never show full key)
 - Validate before save: Make test API call to provider
 
+### Interview Prep Pattern (Personalized Intelligence)
+- **2-step wizard**: Step 1 = context (company, round, resume upload, JD), Step 2 = Q&A review + settings
+- **MongoDB**: Motor async client singleton in `services/mongodb_service.py`, init/close in lifespan
+- **Question scoring**: Broad query + client-side scoring (company +10, round +5, role +3, tags +1, recency +2, verified +1)
+- **Answer generation**: Uses user's configured LLM provider via httpx (groq/openai/gemini dispatch)
+- **Prompt injection**: Approved Q&A formatted as "PRE-PREPARED ANSWERS" section appended to system prompt
+- **Resume parsing**: PDF (PyPDF2) and DOCX (python-docx) support via `services/resume_parser.py`
+- **File upload**: Uses `python-multipart` + FastAPI `UploadFile`, max 5MB
+- **All LLM clients**: `connect()` now accepts `pre_prepared_answers` param passed through to prompt builder
+- **Auth pattern**: Use `require_auth` from `routers.auth` as Depends, returns User object (use `user.id`)
+
 ### Dashboard Layout Pattern
 - Use Next.js nested layouts (`dashboard/layout.tsx`)
 - Sidebar with navigation links using `usePathname()` for active state
@@ -1191,5 +1202,47 @@ cd frontend && npm run dev
 - **CORS hardcoding**: For development, hardcode CORS origins in `main.py` to avoid environment variable loading issues
 - **Browser automation on Windows**: Playwright persistent browser contexts may have issues; consider Extension Mode or manual testing
 
+---
+
+## 2026-02-08 - Feature: Personalized Interview Intelligence (2-Step Prep Wizard)
+- **What was implemented**: Complete 2-step preparation wizard before live interviews with company-specific question intelligence and pre-validated answers
+- **Architecture**:
+  - Step 1: Collect deep context (company name, interview round, resume file upload)
+  - Step 2: Fetch likely questions from MongoDB, generate resume-grounded answers via LLM, review/edit/approve, inject into system prompt
+- **Backend files created**:
+  - `backend/services/mongodb_service.py` - Motor async client with question scoring and tier grouping
+  - `backend/services/resume_parser.py` - PDF/DOCX text extraction using PyPDF2 and python-docx
+  - `backend/services/answer_generator.py` - LLM answer generation with provider dispatch (groq/openai/gemini)
+  - `backend/routers/interview_prep.py` - 4 REST API endpoints (parse-resume, fetch-questions, generate-answers, approve-answers)
+  - `backend/scripts/seed_questions.py` - 24 sample questions across 7 companies and 5 round types
+- **Backend files modified**:
+  - `backend/requirements.txt` - Added motor, pymongo, PyPDF2, python-docx, python-multipart
+  - `backend/config.py` - Added mongodb_uri, mongodb_db_name settings
+  - `backend/main.py` - Registered interview_prep router, added MongoDB lifecycle
+  - `backend/db/models.py` - Added InterviewRound enum, ApprovedAnswer model, session fields
+  - `backend/services/prompts.py` - Added get_prompt_with_prep() for prompt injection
+  - `backend/routers/websocket.py` - Extract preparedAnswers from session.start, pass to LLM
+  - `backend/services/groq_client.py` - Accept pre_prepared_answers in connect/set_context
+  - `backend/services/openai_relay.py` - Accept pre_prepared_answers in connect/build_instructions
+  - `backend/services/gemini_client.py` - Accept pre_prepared_answers in connect/build_instructions
+  - `backend/services/gemini_live_client.py` - Accept pre_prepared_answers in connect
+- **Frontend files created**:
+  - `frontend/components/InterviewPrep/StepWizard.tsx` - Progress indicator with back navigation
+  - `frontend/components/InterviewPrep/ResumeUpload.tsx` - PDF/DOCX upload + text paste toggle
+  - `frontend/components/InterviewPrep/RoundSelector.tsx` - Radio buttons for 5 round types
+  - `frontend/components/InterviewPrep/QuestionCard.tsx` - Q&A card with tier badge, edit, approve
+  - `frontend/components/InterviewPrep/PrepReview.tsx` - Fetch questions, generate answers, bulk approval
+- **Frontend files modified**:
+  - `frontend/types/index.ts` - Added InterviewRound, InterviewQuestion, QuestionAnswerPair types
+  - `frontend/stores/sessionStore.ts` - Added all prep state fields and actions
+  - `frontend/app/interview/page.tsx` - Restructured into 2-step wizard
+- **Question scoring algorithm**: Company +10, Round +5, Role +3, Tag overlap +1 each, Recency +2, Verified +1 (capped 5)
+- **Tier grouping**: Must-Ask (top 20%), High Probability (next 50%), Stretch (rest)
+- **Learnings for future iterations:**
+  - Auth pattern: Use `require_auth` from `routers.auth` (returns User object), NOT `auth_service.get_current_user_id`
+  - All LLM clients (groq, openai, gemini) need `pre_prepared_answers` param threaded through connect() chain
+  - MongoDB Motor client uses global singleton pattern with init/close in FastAPI lifespan
+  - Frontend prep state should reset in the store's `reset()` function for clean new sessions
+  - `get_prompt_with_prep()` wraps `get_prompt()` and simply appends the prep text
 ---
 

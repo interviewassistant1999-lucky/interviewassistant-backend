@@ -33,6 +33,47 @@ export type LLMProvider = 'openai' | 'gemini' | 'gemini-live' | 'adaptive' | 'mo
 
 export type PromptStyle = 'candidate' | 'coach' | 'star'
 
+export type InterviewRound = 'behavioral' | 'technical' | 'system_design' | 'screening' | 'culture_fit'
+
+// === Interview Prep Types ===
+
+export interface PrepContext {
+  companyName: string
+  roundType: InterviewRound | ''
+  resumeFile: File | null
+  resumeParsedText: string
+  jdText: string
+  workExperience: string
+}
+
+export interface InterviewQuestion {
+  id: string
+  question_text: string
+  company_name: string
+  interview_round: string
+  role: string
+  tags: string[]
+  difficulty: string
+  verified_count: number
+  score: number
+  tier: 'must_ask' | 'high_probability' | 'stretch'
+}
+
+export interface GeneratedAnswer {
+  core_message: string
+  example_reference: string
+  impact_metrics: string
+  talking_points: string[]
+}
+
+export interface QuestionAnswerPair {
+  question_id: string
+  question_text: string
+  answer_data: GeneratedAnswer
+  is_approved: boolean
+  is_edited: boolean
+}
+
 export type ConnectionStatus = 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'error'
 
 // === WebSocket Message Types ===
@@ -45,6 +86,7 @@ export interface SessionStartMessage {
   verbosity: Verbosity
   provider?: LLMProvider
   promptKey?: PromptStyle
+  preparedAnswers?: string
 }
 
 export interface SessionEndMessage {

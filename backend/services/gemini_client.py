@@ -29,7 +29,7 @@ from services.rate_limiter import (
     get_rate_limiter,
     get_transcript_cache,
 )
-from services.prompts import get_prompt, get_response_format, format_suggestion_for_display, DEFAULT_PROMPT
+from services.prompts import get_prompt, get_prompt_with_prep, get_response_format, format_suggestion_for_display, DEFAULT_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +72,7 @@ def build_instructions(
     work_experience: str,
     verbosity: str = "moderate",
     prompt_key: str = None,
+    pre_prepared_answers: str = "",
 ) -> str:
     """Build the system instructions with user context.
 
@@ -81,16 +82,18 @@ def build_instructions(
         work_experience: Additional experience details
         verbosity: Response length (concise/moderate/detailed)
         prompt_key: Which prompt style to use (candidate/coach/star)
+        pre_prepared_answers: Formatted pre-prepared Q&A to append
 
     Returns:
         Formatted system prompt string
     """
-    return get_prompt(
+    return get_prompt_with_prep(
         prompt_key=prompt_key,
         job_description=job_description,
         resume=resume,
         work_experience=work_experience,
         verbosity=verbosity,
+        pre_prepared_answers=pre_prepared_answers,
     )
 
 
@@ -217,6 +220,7 @@ class GeminiClient:
         work_experience: str = "",
         verbosity: str = "moderate",
         prompt_key: str = None,
+        pre_prepared_answers: str = "",
     ) -> bool:
         """Initialize Gemini client and start session.
 
@@ -226,6 +230,7 @@ class GeminiClient:
             work_experience: Additional experience details
             verbosity: Response length (concise/moderate/detailed)
             prompt_key: Which prompt style to use (candidate/coach/star)
+            pre_prepared_answers: Formatted pre-prepared Q&A to append to prompt
         """
         try:
             # Configure Gemini API - use user's key if provided
@@ -237,7 +242,7 @@ class GeminiClient:
 
             # Build system instructions using prompts module
             self._instructions = build_instructions(
-                job_description, resume, work_experience, verbosity, prompt_key
+                job_description, resume, work_experience, verbosity, prompt_key, pre_prepared_answers
             )
             self._verbosity = verbosity
 
@@ -904,6 +909,7 @@ class GeminiTextClient:
         work_experience: str = "",
         verbosity: str = "moderate",
         prompt_key: str = None,
+        pre_prepared_answers: str = "",
     ) -> bool:
         """Initialize Gemini for text-based suggestion generation.
 
@@ -913,13 +919,14 @@ class GeminiTextClient:
             work_experience: Additional experience details
             verbosity: Response length (concise/moderate/detailed)
             prompt_key: Which prompt style to use (candidate/coach/star)
+            pre_prepared_answers: Formatted pre-prepared Q&A to append to prompt
         """
         try:
             genai.configure(api_key=settings.gemini_api_key)
 
             self._prompt_key = prompt_key or DEFAULT_PROMPT
             instructions = build_instructions(
-                job_description, resume, work_experience, verbosity, prompt_key
+                job_description, resume, work_experience, verbosity, prompt_key, pre_prepared_answers
             )
 
             # Try different model names for compatibility
