@@ -7,6 +7,7 @@ interface QuestionCardProps {
   pair: QuestionAnswerPair
   index: number
   onUpdate: (index: number, updates: Partial<QuestionAnswerPair>) => void
+  onDelete?: (index: number) => void
 }
 
 const tierColors = {
@@ -21,7 +22,7 @@ const tierLabels = {
   stretch: 'Stretch',
 }
 
-export function QuestionCard({ pair, index, onUpdate }: QuestionCardProps) {
+export function QuestionCard({ pair, index, onUpdate, onDelete }: QuestionCardProps) {
   const [isEditing, setIsEditing] = useState(false)
   const [editData, setEditData] = useState(pair.answer_data)
 
@@ -162,12 +163,22 @@ export function QuestionCard({ pair, index, onUpdate }: QuestionCardProps) {
                 </ul>
               </div>
             )}
-            <button
-              onClick={() => setIsEditing(true)}
-              className="text-xs text-text-secondary hover:text-accent-blue transition-colors"
-            >
-              Edit answer
-            </button>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => setIsEditing(true)}
+                className="text-xs font-bold text-red-500 hover:text-red-400 transition-colors"
+              >
+                Edit answer
+              </button>
+              {onDelete && (
+                <button
+                  onClick={() => onDelete(index)}
+                  className="text-xs text-text-secondary hover:text-red-500 transition-colors"
+                >
+                  Remove
+                </button>
+              )}
+            </div>
           </>
         )}
       </div>

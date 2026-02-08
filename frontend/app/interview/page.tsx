@@ -14,6 +14,7 @@ import { SplitLayout } from '@/components/Panels/SplitLayout'
 import { SessionControls } from '@/components/Controls/SessionControls'
 import { StepWizard } from '@/components/InterviewPrep/StepWizard'
 import { ResumeUpload } from '@/components/InterviewPrep/ResumeUpload'
+import { RoleTypeSelector } from '@/components/InterviewPrep/RoleTypeSelector'
 import { RoundSelector } from '@/components/InterviewPrep/RoundSelector'
 import { PrepReview } from '@/components/InterviewPrep/PrepReview'
 import { useSessionStore } from '@/stores/sessionStore'
@@ -46,6 +47,7 @@ export default function Home() {
   const {
     status, context, verbosity, provider, promptKey, transcript, suggestions,
     prepStep, companyName, setCompanyName, setPrepStep, promptInjection,
+    setQuestions, setQaPairs, setPromptInjection,
     reset,
   } = useSessionStore()
   const { isAuthenticated, _hasHydrated } = useAuthStore()
@@ -162,8 +164,13 @@ export default function Home() {
       setSessionEnded(false)
     }
 
-    // Connect WebSocket
-    connect()
+    // Connect WebSocket and wait for it to be open
+    try {
+      await connect()
+    } catch {
+      setApiKeyError('Failed to connect to server. Please check that the backend is running.')
+      return
+    }
 
     // Start audio capture
     const captureSuccess = await startCapture()
@@ -257,7 +264,13 @@ export default function Home() {
               <StepWizard
                 currentStep={prepStep}
                 totalSteps={2}
-                onBack={() => setPrepStep(prepStep - 1)}
+                onBack={() => {
+                  // Clear fetched questions/answers when going back so changes take effect
+                  setQuestions([])
+                  setQaPairs([])
+                  setPromptInjection('')
+                  setPrepStep(prepStep - 1)
+                }}
               />
 
               {prepStep === 1 && (
@@ -281,6 +294,9 @@ export default function Home() {
                       className="w-full px-4 py-3 bg-bg-tertiary border border-border rounded-lg text-text-primary placeholder-text-secondary/50 focus:outline-none focus:border-accent-blue text-sm"
                     />
                   </div>
+
+                  {/* Role Type */}
+                  <RoleTypeSelector />
 
                   {/* Round Type */}
                   <RoundSelector />

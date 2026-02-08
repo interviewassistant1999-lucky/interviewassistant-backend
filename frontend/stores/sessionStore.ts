@@ -10,6 +10,7 @@ import type {
   LLMProvider,
   PromptStyle,
   QuestionAnswerPair,
+  RoleType,
   SessionContext,
   Suggestion,
   TranscriptEntry,
@@ -55,6 +56,7 @@ interface SessionState {
   // Interview prep state
   prepStep: number  // 0 = no prep, 1 = context, 2 = review
   companyName: string
+  roleType: RoleType | ''
   roundType: InterviewRound | ''
   resumeFile: File | null
   resumeParsedText: string
@@ -80,6 +82,7 @@ interface SessionState {
   setRateLimitStatus: (status: Partial<RateLimitState>) => void
   setPrepStep: (step: number) => void
   setCompanyName: (name: string) => void
+  setRoleType: (role: RoleType | '') => void
   setRoundType: (round: InterviewRound | '') => void
   setResumeFile: (file: File | null) => void
   setResumeParsedText: (text: string) => void
@@ -126,6 +129,7 @@ export const useSessionStore = create<SessionState>((set) => ({
   // Interview prep initial state
   prepStep: 1,
   companyName: '',
+  roleType: '',
   roundType: '',
   resumeFile: null,
   resumeParsedText: '',
@@ -183,6 +187,7 @@ export const useSessionStore = create<SessionState>((set) => ({
   // Prep actions
   setPrepStep: (prepStep) => set({ prepStep }),
   setCompanyName: (companyName) => set({ companyName }),
+  setRoleType: (roleType) => set({ roleType }),
   setRoundType: (roundType) => set({ roundType }),
   setResumeFile: (resumeFile) => set({ resumeFile }),
   setResumeParsedText: (resumeParsedText) => set({ resumeParsedText }),
@@ -211,6 +216,7 @@ export const useSessionStore = create<SessionState>((set) => ({
       rateLimit: { ...initialRateLimit },
       prepStep: 1,
       companyName: '',
+      roleType: '',
       roundType: '',
       resumeFile: null,
       resumeParsedText: '',

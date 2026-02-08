@@ -35,6 +35,18 @@ export type PromptStyle = 'candidate' | 'coach' | 'star'
 
 export type InterviewRound = 'behavioral' | 'technical' | 'system_design' | 'screening' | 'culture_fit'
 
+export type RoleType =
+  | 'software_engineer'
+  | 'senior_software_engineer'
+  | 'staff_engineer'
+  | 'product_manager'
+  | 'technical_program_manager'
+  | 'data_scientist'
+  | 'data_engineer'
+  | 'machine_learning_engineer'
+  | 'engineering_manager'
+  | 'other'
+
 // === Interview Prep Types ===
 
 export interface PrepContext {

@@ -118,49 +118,65 @@ export function useWebSocket() {
     [setStatus, setLatency, addTranscriptEntry, updateTranscriptEntry, addSuggestion, setRateLimitStatus]
   )
 
-  const connect = useCallback(() => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      return
-    }
-
-    setStatus('connecting')
-
-    // Get auth token and pass it as query parameter
-    const token = useAuthStore.getState().token
-    const wsUrl = token ? `${WS_URL}?token=${encodeURIComponent(token)}` : WS_URL
-
-    const ws = new WebSocket(wsUrl)
-    wsRef.current = ws
-
-    ws.onopen = () => {
-      console.log('WebSocket connected')
-      // Start ping interval
-      pingIntervalRef.current = setInterval(() => {
-        if (ws.readyState === WebSocket.OPEN) {
-          const pingMessage: ClientMessage = {
-            type: 'ping',
-            timestamp: Date.now(),
-          }
-          ws.send(JSON.stringify(pingMessage))
-        }
-      }, 5000)
-    }
-
-    ws.onmessage = handleMessage
-
-    ws.onclose = () => {
-      console.log('WebSocket closed')
-      setStatus('idle')
-      if (pingIntervalRef.current) {
-        clearInterval(pingIntervalRef.current)
-        pingIntervalRef.current = null
+  const connect = useCallback((): Promise<void> => {
+    return new Promise((resolve, reject) => {
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        resolve()
+        return
       }
-    }
 
-    ws.onerror = (error) => {
-      console.error('WebSocket error:', error)
-      setStatus('error')
-    }
+      setStatus('connecting')
+
+      // Get auth token and pass it as query parameter
+      const token = useAuthStore.getState().token
+      const wsUrl = token ? `${WS_URL}?token=${encodeURIComponent(token)}` : WS_URL
+
+      const ws = new WebSocket(wsUrl)
+      wsRef.current = ws
+
+      // Timeout after 10 seconds
+      const timeout = setTimeout(() => {
+        console.error('WebSocket connection timeout')
+        ws.close()
+        setStatus('error')
+        reject(new Error('WebSocket connection timeout'))
+      }, 10000)
+
+      ws.onopen = () => {
+        clearTimeout(timeout)
+        console.log('WebSocket connected')
+        // Start ping interval
+        pingIntervalRef.current = setInterval(() => {
+          if (ws.readyState === WebSocket.OPEN) {
+            const pingMessage: ClientMessage = {
+              type: 'ping',
+              timestamp: Date.now(),
+            }
+            ws.send(JSON.stringify(pingMessage))
+          }
+        }, 5000)
+        resolve()
+      }
+
+      ws.onmessage = handleMessage
+
+      ws.onclose = () => {
+        clearTimeout(timeout)
+        console.log('WebSocket closed')
+        setStatus('idle')
+        if (pingIntervalRef.current) {
+          clearInterval(pingIntervalRef.current)
+          pingIntervalRef.current = null
+        }
+      }
+
+      ws.onerror = (error) => {
+        clearTimeout(timeout)
+        console.error('WebSocket error:', error)
+        setStatus('error')
+        reject(error)
+      }
+    })
   }, [handleMessage, setStatus])
 
   const disconnect = useCallback(() => {
