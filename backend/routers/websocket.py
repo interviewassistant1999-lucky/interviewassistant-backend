@@ -25,9 +25,13 @@ from config import settings
 from services.openai_relay import get_openai_client, get_llm_client
 from services.session_manager import session_manager
 from services.auth_service import auth_service
+from services.conversation_history import ConversationHistory
+from services.intent_classifier import parse_intent_from_response, INTENT_NOT_A_QUESTION
+from services.prompts import is_not_a_question
 from services.encryption import decrypt_api_key
 from db.database import AsyncSessionLocal
-from db.models import User, InterviewSession, UserAPIKey, LLMProvider
+from db.models import User, InterviewSession, UserAPIKey, LLMProvider, CreditType
+from services import credit_service
 
 logger = logging.getLogger(__name__)
 
@@ -39,13 +43,17 @@ def parse_suggestion_response(text: str) -> Tuple[str, List[str], str]:
 
     Supports multiple formats:
 
-    Candidate Mode (new):
+    Markdown heading format (current - all modes):
+    ### 🎤 Say First / ### 💬 Suggested Response / ### 📍 Situation / etc.
+    Passed through as-is for MarkdownContent rendering on the frontend.
+
+    Legacy Candidate Mode:
     **Say First:** <opening line>
     **Your Story:** <battle story>
     **Drop These:** <metrics>
     **Pro Tip:** <tactical advice>
 
-    Coach Mode (original):
+    Legacy Coach Mode:
     **Suggested Response:**
     <response text>
     **Key Points:**
@@ -63,6 +71,11 @@ def parse_suggestion_response(text: str) -> Tuple[str, List[str], str]:
 
     # Normalize line endings
     text = text.replace('\r\n', '\n')
+
+    # New markdown heading format (### style) — pass through as-is.
+    # MarkdownContent on the frontend renders headings, bullets, and structure inline.
+    if '### ' in text:
+        return text.strip(), [], ""
 
     # Check if this is Candidate Mode format (has "Say First" or "Your Story")
     is_candidate_mode = "**Say First:**" in text or "**Your Story:**" in text
@@ -200,6 +213,20 @@ class ConnectionState:
         self.suggestion_entries: List[dict] = []
         self.context: dict = {}  # Job description, resume, etc.
 
+        # Conversation intelligence (feature-flagged)
+        self.conversation_history: Optional[ConversationHistory] = None
+        self.last_interviewer_question: str = ""  # Track for intent/suggestion routing
+
+        # Credit system
+        self.credit_type: Optional[str] = None
+        self.credit_deduction_task: Optional[asyncio.Task] = None
+        self.total_seconds_charged: int = 0
+        self.credits_exhausted: bool = False
+        self.grace_period_started: Optional[float] = None
+
+        # Mute control
+        self.suggestions_muted: bool = False
+
 
 async def authenticate_websocket(token: Optional[str]) -> Optional[str]:
     """Authenticate WebSocket connection using JWT token.
@@ -242,7 +269,9 @@ async def get_user_api_key(user_id: str, provider: str) -> Optional[str]:
             'adaptive': LLMProvider.GROQ,
             'groq': LLMProvider.GROQ,
             'openai': LLMProvider.OPENAI,
+            'openai-adaptive': LLMProvider.OPENAI,
             'gemini': LLMProvider.GEMINI,
+            'anthropic': LLMProvider.ANTHROPIC,
         }
 
         llm_provider = provider_map.get(provider.lower())
@@ -314,6 +343,11 @@ async def websocket_endpoint(websocket: WebSocket, token: Optional[str] = Query(
 
     except WebSocketDisconnect:
         logger.info(f"[WS] Client disconnected: {state.session_id} (total audio messages: {audio_message_count})")
+    except RuntimeError as e:
+        if "disconnect message has been received" in str(e):
+            logger.info(f"[WS] Client disconnected during receive: {state.session_id} (total audio messages: {audio_message_count})")
+        else:
+            logger.error(f"[WS] !!!!! WebSocket runtime error: {e}")
     except Exception as e:
         logger.error(f"[WS] !!!!! WebSocket error: {type(e).__name__}: {e}")
         import traceback
@@ -349,8 +383,98 @@ async def handle_json_message(state: ConnectionState, data: dict) -> None:
         await handle_speaker_update(state, data)
     elif msg_type == "speech.timing":
         await handle_speech_timing(state, data)
+    elif msg_type == "suggestions.toggle":
+        enabled = data.get("enabled", True)
+        state.suggestions_muted = not enabled
+        logger.info(f"[WS] Suggestions {'ENABLED' if enabled else 'MUTED'}")
     else:
         logger.warning(f"Unknown message type: {msg_type}")
+
+
+async def credit_deduction_loop(state: ConnectionState) -> None:
+    """Background task that deducts credits every N seconds during a session."""
+    interval = settings.credit_deduction_interval_seconds
+    grace_period = settings.credit_grace_period_seconds
+
+    logger.info(f"[CREDITS] Deduction loop started (interval={interval}s, grace={grace_period}s)")
+
+    try:
+        while True:
+            await asyncio.sleep(interval)
+
+            if not state.user_id or not state.credit_type:
+                continue
+
+            async with AsyncSessionLocal() as db:
+                success, remaining = await credit_service.deduct_credits(
+                    db=db,
+                    user_id=state.user_id,
+                    credit_type=state.credit_type,
+                    seconds=interval,
+                    session_id=state.db_session_id,
+                )
+                await db.commit()
+
+                state.total_seconds_charged += interval
+
+                # Send credits.update to client
+                update_msg = json.dumps({
+                    "type": "credits.update",
+                    "remaining_seconds": remaining,
+                    "seconds_used": state.total_seconds_charged,
+                })
+                await state.websocket.send_text(update_msg)
+
+                # Warning at 5 minutes remaining
+                if 0 < remaining <= 300 and remaining > 300 - interval:
+                    warning_msg = json.dumps({
+                        "type": "credits.warning",
+                        "remaining_seconds": remaining,
+                        "message": f"Low credits: {remaining // 60} minutes remaining",
+                    })
+                    await state.websocket.send_text(warning_msg)
+                    logger.info(f"[CREDITS] Low credit warning: {remaining}s remaining")
+
+                # Warning at 1 minute remaining
+                if 0 < remaining <= 60 and remaining > 60 - interval:
+                    warning_msg = json.dumps({
+                        "type": "credits.warning",
+                        "remaining_seconds": remaining,
+                        "message": "Less than 1 minute of credits remaining!",
+                    })
+                    await state.websocket.send_text(warning_msg)
+                    logger.warning(f"[CREDITS] Critical credit warning: {remaining}s remaining")
+
+                # Credits exhausted — start grace period
+                if remaining <= 0 and not state.credits_exhausted:
+                    state.credits_exhausted = True
+                    state.grace_period_started = time.time()
+                    exhausted_msg = json.dumps({
+                        "type": "credits.exhausted",
+                        "grace_period_seconds": grace_period,
+                        "message": f"Credits exhausted. Session will end in {grace_period} seconds.",
+                    })
+                    await state.websocket.send_text(exhausted_msg)
+                    logger.warning(f"[CREDITS] Credits exhausted for user {state.user_id}, grace period started")
+
+                # Grace period expired — force end session
+                if state.grace_period_started:
+                    elapsed_grace = time.time() - state.grace_period_started
+                    if elapsed_grace >= grace_period:
+                        force_end_msg = json.dumps({
+                            "type": "credits.force_end",
+                            "message": "Session ended: credits exhausted and grace period expired.",
+                        })
+                        await state.websocket.send_text(force_end_msg)
+                        logger.warning(f"[CREDITS] Force-ending session for user {state.user_id}")
+                        # Trigger session end
+                        await handle_session_end(state)
+                        return
+
+    except asyncio.CancelledError:
+        logger.info(f"[CREDITS] Deduction loop cancelled (charged {state.total_seconds_charged}s total)")
+    except Exception as e:
+        logger.error(f"[CREDITS] Deduction loop error: {e}")
 
 
 async def handle_session_start(state: ConnectionState, data: dict) -> None:
@@ -366,10 +490,19 @@ async def handle_session_start(state: ConnectionState, data: dict) -> None:
     logger.info(f"[SESSION] Provider requested: {provider}")
     logger.info(f"[SESSION] Prompt style: {prompt_key or 'default (candidate)'}")
     logger.info(f"[SESSION] Verbosity: {verbosity}")
+    company_name = context.get("companyName", "")
+    role_type = context.get("roleType", "")
+    round_type = context.get("roundType", "")
+
+    logger.info(f"[SESSION] Context - Company: {company_name or '(not set)'}")
+    logger.info(f"[SESSION] Context - Role: {role_type or '(not set)'}")
+    logger.info(f"[SESSION] Context - Round: {round_type or '(not set)'}")
     logger.info(f"[SESSION] Context - Job desc: {len(context.get('jobDescription', ''))} chars")
     logger.info(f"[SESSION] Context - Resume: {len(context.get('resume', ''))} chars")
     logger.info(f"[SESSION] Context - Work exp: {len(context.get('workExperience', ''))} chars")
     logger.info(f"[SESSION] Pre-prepared answers: {len(prepared_answers)} chars")
+    if prepared_answers:
+        logger.info(f"[SESSION] Pre-prepared answers content (first 500 chars):\n{prepared_answers[:500]}")
     logger.info(f"[SESSION] User ID: {state.user_id or 'anonymous'}")
 
     # Store context for later database saving
@@ -377,23 +510,84 @@ async def handle_session_start(state: ConnectionState, data: dict) -> None:
     state.provider_used = provider
     state.session_start_time = datetime.utcnow()
 
+    # Determine credit type based on whether user has BYO API key
+    # If user provides their own key → BYO_KEY pricing, otherwise → PLATFORM_AI
+    if state.user_id and provider and provider.lower() != 'mock':
+        has_own_key = await get_user_api_key(state.user_id, provider) is not None
+        state.credit_type = CreditType.BYO_KEY.value if has_own_key else CreditType.PLATFORM_AI.value
+
+        # Check credit balance before starting
+        async with AsyncSessionLocal() as db:
+            can_start, message, available = await credit_service.can_start_session(
+                db, state.user_id, state.credit_type
+            )
+            if not can_start:
+                logger.warning(f"[SESSION] Insufficient credits for user {state.user_id}: {message}")
+                error_msg = ErrorMessage(
+                    code="INSUFFICIENT_CREDITS",
+                    message=message,
+                    recoverable=False,
+                )
+                await state.websocket.send_text(error_msg.model_dump_json())
+                return
+            logger.info(f"[SESSION] Credit check passed: {available}s available ({state.credit_type})")
+
     # Get user's API key if authenticated
+    # Falls back to platform server keys for free trial and Platform+AI users
     user_api_key = None
+    whisper_api_key = None
+    using_platform_key = False
     if state.user_id and provider and provider.lower() != 'mock':
         user_api_key = await get_user_api_key(state.user_id, provider)
         if user_api_key:
             state.user_api_key = user_api_key
             logger.info(f"[SESSION] Using user's {provider} API key")
         else:
-            # User doesn't have an API key for this provider
-            logger.warning(f"[SESSION] User has no API key for {provider}")
-            error_msg = ErrorMessage(
-                code="API_KEY_MISSING",
-                message=f"No API key found for {provider}. Please add your API key in Settings.",
-                recoverable=False,
-            )
-            await state.websocket.send_text(error_msg.model_dump_json())
-            return
+            # No user key — check if platform key is available (free trial / Platform+AI)
+            # credit_type is PLATFORM_AI when user has no saved key (set above at line 503)
+            if state.credit_type == CreditType.PLATFORM_AI.value:
+                # Use platform server key — user is on free trial or Platform+AI plan
+                user_api_key = None  # Let the client class fall back to settings.*_api_key
+                using_platform_key = True
+                logger.info(f"[SESSION] Using platform {provider} key (credit_type={state.credit_type})")
+            else:
+                # BYO_KEY user without a saved key — this shouldn't happen, but guard anyway
+                logger.warning(f"[SESSION] BYO_KEY user has no API key for {provider}")
+                error_msg = ErrorMessage(
+                    code="API_KEY_MISSING",
+                    message=f"No API key found for {provider}. Please add your API key in Settings.",
+                    recoverable=False,
+                )
+                await state.websocket.send_text(error_msg.model_dump_json())
+                return
+
+        # Anthropic needs a separate Whisper key for transcription (Groq preferred, OpenAI fallback)
+        # When using platform keys, skip this — the client falls back to Deepgram (server key)
+        # or settings.groq_api_key / settings.openai_api_key internally
+        if provider.lower() == 'anthropic' and not using_platform_key:
+            whisper_api_key = await get_user_api_key(state.user_id, 'groq')
+            if whisper_api_key:
+                logger.info("[SESSION] Using user's Groq key for Whisper transcription (Anthropic)")
+            else:
+                whisper_api_key = await get_user_api_key(state.user_id, 'openai')
+                if whisper_api_key:
+                    logger.info("[SESSION] Using user's OpenAI key for Whisper transcription (Anthropic)")
+                else:
+                    logger.warning("[SESSION] Anthropic provider requires a Groq or OpenAI key for Whisper transcription")
+                    error_msg = ErrorMessage(
+                        code="API_KEY_MISSING",
+                        message="Anthropic provider requires a Groq or OpenAI API key for audio transcription. Please add one in Settings.",
+                        recoverable=False,
+                    )
+                    await state.websocket.send_text(error_msg.model_dump_json())
+                    return
+
+    # Initialize conversation intelligence (feature-flagged)
+    if settings.enable_conversation_memory:
+        state.conversation_history = ConversationHistory(
+            max_active_turns=settings.conversation_memory_turns
+        )
+        logger.info(f"[SESSION] Conversation memory enabled (buffer={settings.conversation_memory_turns} turns)")
 
     # Create in-memory session
     session = session_manager.create_session(
@@ -407,9 +601,13 @@ async def handle_session_start(state: ConnectionState, data: dict) -> None:
 
     # Connect to LLM provider with user's API key
     logger.info(f"[SESSION] Getting LLM client...")
-    state.openai_client = get_llm_client(provider, api_key=user_api_key)
+    state.openai_client = get_llm_client(provider, api_key=user_api_key, whisper_api_key=whisper_api_key)
     provider_name = provider or "default"
     logger.info(f"[SESSION] LLM client obtained: {type(state.openai_client).__name__}")
+
+    # Pass conversation history to LLM client if supported
+    if state.conversation_history and hasattr(state.openai_client, 'set_conversation_history'):
+        state.openai_client.set_conversation_history(state.conversation_history)
 
     logger.info(f"[SESSION] Connecting to LLM provider...")
     connected = await state.openai_client.connect(
@@ -419,6 +617,9 @@ async def handle_session_start(state: ConnectionState, data: dict) -> None:
         verbosity=verbosity,
         prompt_key=prompt_key,
         pre_prepared_answers=prepared_answers,
+        company_name=company_name,
+        role_type=role_type,
+        round_type=round_type,
     )
     logger.info(f"[SESSION] LLM connection result: {connected}")
 
@@ -430,8 +631,11 @@ async def handle_session_start(state: ConnectionState, data: dict) -> None:
         )
         logger.info(f"[SESSION] Background task started")
 
-        # Send ready message
-        ready_msg = SessionReadyMessage()
+        # Send ready message with STT mode
+        stt_mode = "chunked"
+        if hasattr(state.openai_client, 'stt_mode'):
+            stt_mode = state.openai_client.stt_mode
+        ready_msg = SessionReadyMessage(sttMode=stt_mode)
         await state.websocket.send_text(ready_msg.model_dump_json())
         logger.info(f"[SESSION] Sent session.ready message to client")
 
@@ -439,6 +643,13 @@ async def handle_session_start(state: ConnectionState, data: dict) -> None:
         status_msg = ConnectionStatusMessage(status="connected")
         await state.websocket.send_text(status_msg.model_dump_json())
         logger.info(f"[SESSION] Sent connection.status=connected to client")
+
+        # Start credit deduction loop if authenticated and not mock
+        if state.user_id and state.credit_type:
+            state.credit_deduction_task = asyncio.create_task(
+                credit_deduction_loop(state)
+            )
+            logger.info(f"[SESSION] Credit deduction loop started ({state.credit_type})")
 
         logger.info(f"[SESSION] ===== Session started successfully: {session.id} (provider: {provider_name}) =====")
     else:
@@ -485,6 +696,8 @@ async def save_session_to_db(state: ConnectionState) -> Optional[str]:
                 suggestions=state.suggestion_entries,
                 duration_seconds=duration_seconds,
                 provider_used=state.provider_used,
+                credit_type_used=state.credit_type,
+                seconds_charged=state.total_seconds_charged,
                 created_at=state.session_start_time or datetime.utcnow(),
                 ended_at=datetime.utcnow(),
             )
@@ -504,6 +717,15 @@ async def save_session_to_db(state: ConnectionState) -> Optional[str]:
 async def handle_session_end(state: ConnectionState) -> None:
     """End the current session."""
     logger.info(f"[SESSION] Ending session: {state.session_id}")
+
+    # Cancel credit deduction loop
+    if state.credit_deduction_task:
+        state.credit_deduction_task.cancel()
+        try:
+            await state.credit_deduction_task
+        except asyncio.CancelledError:
+            pass
+        state.credit_deduction_task = None
 
     # Save session to database before clearing
     if state.user_id and (state.transcript_entries or state.suggestion_entries):
@@ -592,14 +814,14 @@ async def handle_speech_timing(state: ConnectionState, data: dict) -> None:
 
 
 async def handle_audio_data(state: ConnectionState, audio_bytes: bytes) -> None:
-    """Forward audio data to LLM client."""
+    """Forward audio data to LLM client with speaker context."""
     if not state.openai_client:
         logger.warning("[WS-AUDIO] No LLM client available!")
         return
     if not state.openai_client.is_connected:
         logger.warning("[WS-AUDIO] LLM client not connected!")
         return
-    await state.openai_client.send_audio(audio_bytes)
+    await state.openai_client.send_audio(audio_bytes, speaker=state.current_speaker)
 
 
 async def receive_from_openai(state: ConnectionState) -> None:
@@ -623,39 +845,42 @@ async def receive_from_openai(state: ConnectionState) -> None:
             if event_type == "conversation.item.input_audio_transcription.completed":
                 # Transcription completed
                 transcript = message.get("transcript", "")
-                entry_id = str(uuid.uuid4())
-                speaker = state.current_speaker  # Use detected speaker
-                logger.info(f"[WS-RECV] TRANSCRIPT received from {speaker}: '{transcript[:100]}...'")
 
-                # Detect if this is a new turn
-                current_time = time.time()
-                is_new_turn = False
+                # Deepgram streaming provides segment ID, finality, new turn, and speaker
+                entry_id = message.get("segmentId") or str(uuid.uuid4())
+                is_final_transcript = message.get("isFinal", True)
+                is_new_turn = message.get("isNewTurn", False)
+                speaker = message.get("speaker", state.current_speaker)
 
-                if settings.use_speech_timing_for_turns:
-                    # Option B1: Use frontend VAD speech timing (more accurate)
-                    # Check if there was significant silence BEFORE this speech started
-                    # We use silence_before_speech_ms which captures the silence duration
-                    # at the moment speech resumed (before it was reset to 0)
-                    if state.silence_before_speech_ms >= settings.speech_silence_threshold_ms:
+                logger.info(f"[WS-RECV] TRANSCRIPT from {speaker}: '{transcript[:100]}...' "
+                            f"(id={entry_id}, final={is_final_transcript}, newTurn={is_new_turn})")
+
+                # For Whisper mode (no segmentId), detect new turns using silence
+                if "segmentId" not in message:
+                    current_time = time.time()
+                    if state.last_transcript_time == 0:
                         is_new_turn = True
-                        logger.info(f"[WS-RECV] New turn detected (B1 VAD silence before speech: {state.silence_before_speech_ms:.0f}ms)")
-                        # Reset after using it so we don't mark every transcript as new turn
-                        state.silence_before_speech_ms = 0
-                    elif state.last_transcript_time == 0:
-                        # First transcript is always a new turn
-                        is_new_turn = True
-                else:
-                    # Option A (legacy): Use transcript arrival time
-                    if state.last_transcript_time > 0:
+                    elif settings.use_speech_timing_for_turns:
+                        # B1: Use frontend VAD silence-before-speech detection
+                        if state.silence_before_speech_ms >= settings.speech_silence_threshold_ms:
+                            is_new_turn = True
+                            logger.info(f"[WS-RECV] New turn detected (B1 VAD silence: {state.silence_before_speech_ms:.0f}ms)")
+                            state.silence_before_speech_ms = 0
+
+                        # Fallback: also check time gap between transcripts
+                        # (handles case where interviewee is silent so B1 never fires)
+                        if not is_new_turn:
+                            silence_duration = current_time - state.last_transcript_time
+                            if silence_duration >= NEW_TURN_SILENCE_THRESHOLD:
+                                is_new_turn = True
+                                logger.info(f"[WS-RECV] New turn detected (time fallback: {silence_duration:.1f}s)")
+                    else:
+                        # Option A: Pure time-based detection
                         silence_duration = current_time - state.last_transcript_time
                         if silence_duration >= NEW_TURN_SILENCE_THRESHOLD:
                             is_new_turn = True
                             logger.info(f"[WS-RECV] New turn detected (Option A silence: {silence_duration:.1f}s)")
-                    else:
-                        # First transcript is always a new turn
-                        is_new_turn = True
-
-                state.last_transcript_time = current_time
+                    state.last_transcript_time = current_time
 
                 # Add to session
                 if state.session_id:
@@ -664,67 +889,148 @@ async def receive_from_openai(state: ConnectionState) -> None:
                         entry_id,
                         speaker,
                         transcript,
-                        is_final=True,
+                        is_final=is_final_transcript,
                     )
-                    logger.info(f"[WS-RECV] Transcript added to session (speaker: {speaker}, newTurn: {is_new_turn})")
 
-                # Accumulate for database saving
-                state.transcript_entries.append({
-                    "id": entry_id,
-                    "speaker": speaker,
-                    "text": transcript,
-                    "timestamp": current_time,
-                    "isNewTurn": is_new_turn,
-                })
+                # Only accumulate final transcripts for database saving
+                if is_final_transcript:
+                    state.transcript_entries.append({
+                        "id": entry_id,
+                        "speaker": speaker,
+                        "text": transcript,
+                        "timestamp": time.time(),
+                        "isNewTurn": is_new_turn,
+                    })
+                    # Track last interviewer question for conversation intelligence
+                    if speaker == "interviewer":
+                        state.last_interviewer_question = transcript
 
-                # Send to client
+                # Send to client (supports update-or-add based on entry_id)
                 delta_msg = TranscriptDeltaMessage(
                     id=entry_id,
                     speaker=speaker,
                     text=transcript,
-                    isFinal=True,
+                    isFinal=is_final_transcript,
                     isNewTurn=is_new_turn,
                 )
-                logger.info(f"[WS-RECV] Sending transcript to client WebSocket...")
                 await state.websocket.send_text(delta_msg.model_dump_json())
-                logger.info(f"[WS-RECV] Transcript SENT to client!")
+                logger.info(f"[WS-RECV] Transcript SENT to client (final={is_final_transcript})")
+
+            elif event_type == "suggestion.delta":
+                # Skip if suggestions are muted
+                if state.suggestions_muted:
+                    continue
+                # Streaming suggestion text chunk — forward to client immediately
+                delta = message.get("delta", "")
+                delta_id = message.get("id", "")
+                is_first = message.get("isFirst", False)
+                if delta:
+                    delta_msg = json.dumps({
+                        "type": "suggestion.delta",
+                        "id": delta_id,
+                        "delta": delta,
+                        "isFirst": is_first,
+                    })
+                    await state.websocket.send_text(delta_msg)
+                    if is_first:
+                        logger.info(f"[WS-RECV] Streaming suggestion started: id={delta_id}")
+
+            elif event_type == "suggestion.cancel":
+                # LLM determined input was not a question — cancel streaming suggestion
+                cancel_id = message.get("id", "")
+                cancel_msg = json.dumps({
+                    "type": "suggestion.cancel",
+                    "id": cancel_id,
+                })
+                await state.websocket.send_text(cancel_msg)
+                logger.info(f"[WS-RECV] Streaming suggestion cancelled (not a question): id={cancel_id}")
 
             elif event_type == "response.text.delta":
-                # Streaming text response
+                # Legacy streaming text response (non-Anthropic providers)
                 delta = message.get("delta", "")
                 if not current_transcript_id:
                     current_transcript_id = str(uuid.uuid4())
                 logger.info(f"[WS-RECV] Text delta received: '{delta[:50]}...'")
 
             elif event_type == "response.text.done":
-                # Response complete - parse and send as suggestion
-                text = message.get("text", "")
-                logger.info(f"[WS-RECV] SUGGESTION received: '{text[:100]}...'")
+                # Skip if suggestions are muted
+                if state.suggestions_muted:
+                    logger.info("[WS-RECV] Suggestions muted - skipping suggestion")
+                    continue
+                # Response complete - parse and send as final suggestion
+                try:
+                    text = message.get("text", "")
+                    # Use the suggestion ID from streaming if available
+                    suggestion_id = message.get("id") or str(uuid.uuid4())
+                    logger.info(f"[WS-RECV] SUGGESTION complete: id={suggestion_id}, '{text[:100]}...'")
 
-                if text:
-                    # Parse the structured response into separate fields
-                    response, key_points, follow_up = parse_suggestion_response(text)
-                    logger.info(f"[WS-RECV] Parsed suggestion: response={len(response)} chars, {len(key_points)} key points, follow_up={len(follow_up)} chars")
+                    if text:
+                        # Extract intent classification if enabled
+                        intent = "new_question"
+                        display_text = text
+                        if settings.enable_intent_classification:
+                            intent, display_text = parse_intent_from_response(text)
+                            logger.info(f"[WS-RECV] Classified intent: {intent}")
 
-                    suggestion_id = str(uuid.uuid4())
-                    suggestion_msg = SuggestionMessage(
-                        id=suggestion_id,
-                        response=response,
-                        keyPoints=key_points,
-                        followUp=follow_up,
-                    )
-                    logger.info(f"[WS-RECV] Sending suggestion to client WebSocket...")
-                    await state.websocket.send_text(suggestion_msg.model_dump_json())
-                    logger.info(f"[WS-RECV] Suggestion SENT to client!")
+                        # Parse the structured response into separate fields
+                        response, key_points, follow_up = parse_suggestion_response(display_text)
+                        logger.info(f"[WS-RECV] Parsed suggestion: response={len(response)} chars, {len(key_points)} key points, follow_up={len(follow_up)} chars")
 
-                    # Accumulate for database saving
-                    state.suggestion_entries.append({
-                        "id": suggestion_id,
-                        "response": response,
-                        "keyPoints": key_points,
-                        "followUp": follow_up,
-                        "timestamp": time.time(),
-                    })
+                        # Get the question this suggestion responds to
+                        question_text = message.get("question", "") or state.last_interviewer_question
+
+                        suggestion_msg = SuggestionMessage(
+                            id=suggestion_id,
+                            response=response,
+                            keyPoints=key_points,
+                            followUp=follow_up,
+                            intent=intent,
+                            question=question_text,
+                        )
+                        logger.info(f"[WS-RECV] Sending final suggestion to client WebSocket...")
+                        await state.websocket.send_text(suggestion_msg.model_dump_json())
+                        logger.info(f"[WS-RECV] Final suggestion SENT to client!")
+
+                        # Record turns in conversation history
+                        try:
+                            if state.conversation_history and not is_not_a_question(response):
+                                state.conversation_history.add_turn(
+                                    role="interviewer",
+                                    text=question_text,
+                                    intent=intent,
+                                )
+                                state.conversation_history.add_turn(
+                                    role="candidate",
+                                    text=response[:500],  # Truncate to save memory
+                                    intent="answer",
+                                )
+                                logger.info(f"[WS-RECV] Recorded conversation turn (history size: {len(state.conversation_history)})")
+                        except Exception as hist_err:
+                            logger.error(f"[WS-RECV] Error recording conversation history: {hist_err}")
+
+                        # Accumulate for database saving
+                        state.suggestion_entries.append({
+                            "id": suggestion_id,
+                            "response": response,
+                            "keyPoints": key_points,
+                            "followUp": follow_up,
+                            "intent": intent,
+                            "question": question_text,
+                            "timestamp": time.time(),
+                        })
+                except Exception as suggestion_err:
+                    logger.error(f"[WS-RECV] Error processing suggestion: {type(suggestion_err).__name__}: {suggestion_err}")
+                    import traceback
+                    logger.error(f"[WS-RECV] Suggestion error traceback:\n{traceback.format_exc()}")
+                    # Cancel the streaming suggestion so frontend doesn't get stuck
+                    try:
+                        cancel_msg = json.dumps({
+                            "type": "suggestion.cancel",
+                            "id": message.get("id", ""),
+                        })
+                        await state.websocket.send_text(cancel_msg)
+                    except Exception:
+                        pass
                 current_transcript_id = None
 
             elif event_type == "error":
@@ -752,6 +1058,15 @@ async def receive_from_openai(state: ConnectionState) -> None:
 
 async def cleanup_connection(state: ConnectionState) -> None:
     """Clean up connection resources."""
+    # Cancel credit deduction loop
+    if state.credit_deduction_task:
+        state.credit_deduction_task.cancel()
+        try:
+            await state.credit_deduction_task
+        except asyncio.CancelledError:
+            pass
+        state.credit_deduction_task = None
+
     # Save session to database if not already saved
     if state.user_id and state.session_id and not state.db_session_id:
         if state.transcript_entries or state.suggestion_entries:

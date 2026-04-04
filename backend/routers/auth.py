@@ -11,7 +11,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from db.database import get_db
 from db.models import User
 from services.auth_service import auth_service, AuthError
+from services.email_service import send_password_reset_email
+from services import credit_service
 from config import settings
+from limiter import limiter
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +38,33 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class VerifyEmailRequest(BaseModel):
+    """Verify email request body."""
+    token: str
+
+
+class ResendVerificationRequest(BaseModel):
+    """Resend verification email request body."""
+    email: EmailStr
+
+
+class ForgotPasswordRequest(BaseModel):
+    """Forgot password request body."""
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    """Reset password request body."""
+    token: str
+    new_password: str
+
+
+class SignupResponse(BaseModel):
+    """Signup response (no token - user must verify email first)."""
+    message: str
+    requires_verification: bool = True
+
+
 class AuthResponse(BaseModel):
     """Authentication response."""
     access_token: str
@@ -51,22 +81,29 @@ class UserResponse(BaseModel):
     created_at: str
 
 
-def user_to_dict(user: User) -> dict:
+def user_to_dict(user: User, credit_balance: dict = None) -> dict:
     """Convert User model to dictionary for response."""
-    return {
+    result = {
         "id": user.id,
         "email": user.email,
         "name": user.name,
         "subscription_tier": user.subscription_tier.value,
+        "is_admin": user.is_admin,
         "created_at": user.created_at.isoformat(),
     }
+    if credit_balance is not None:
+        result["credit_balance"] = credit_balance
+    return result
 
 
 async def get_current_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
     db: AsyncSession = Depends(get_db),
 ) -> Optional[User]:
-    """Get current user from JWT token. Returns None if not authenticated."""
+    """Get current user from JWT token. Returns None if not authenticated.
+
+    Uses a short-lived in-memory cache to avoid a DB round-trip on every request.
+    """
     if not credentials:
         return None
 
@@ -74,7 +111,15 @@ async def get_current_user(
     if not user_id:
         return None
 
+    # Try cache first (avoids ~500ms Supabase round-trip)
+    cached_user = auth_service.get_user_by_id_cached(user_id)
+    if cached_user is not None:
+        return cached_user
+
+    # Cache miss — fetch from DB and cache for subsequent requests
     user = await auth_service.get_user_by_id(db, user_id)
+    if user:
+        auth_service.cache_user(user)
     return user
 
 
@@ -91,24 +136,30 @@ async def require_auth(
     return user
 
 
-@router.post("/signup", response_model=AuthResponse)
+@router.post("/signup", response_model=SignupResponse)
+@limiter.limit("3/minute")
 async def signup(
-    request: SignupRequest,
+    request: Request,
+    body: SignupRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    """Register a new user with email and password."""
-    try:
-        user = await auth_service.register_user(
-            db=db,
-            email=request.email,
-            password=request.password,
-            name=request.name,
-        )
-        token = auth_service.create_access_token(user.id)
+    """Register a new user with email and password.
 
-        return AuthResponse(
-            access_token=token,
-            user=user_to_dict(user),
+    Does not return a token. User must verify email first.
+    """
+    try:
+        user, email_sent = await auth_service.register_user(
+            db=db,
+            email=body.email,
+            password=body.password,
+            name=body.name,
+        )
+
+        return SignupResponse(
+            message="Account created. Please check your email to verify your account."
+            if email_sent
+            else "Account created. Verification email could not be sent — please use the resend option.",
+            requires_verification=True,
         )
     except AuthError as e:
         raise HTTPException(
@@ -117,26 +168,101 @@ async def signup(
         )
 
 
+@router.post("/verify-email")
+async def verify_email(
+    body: VerifyEmailRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Verify a user's email address with the token from the verification email."""
+    try:
+        user = await auth_service.verify_email(db, body.token)
+        return {"message": "Email verified successfully", "email": user.email}
+    except AuthError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+
+
+@router.post("/resend-verification")
+@limiter.limit("2/minute")
+async def resend_verification(
+    request: Request,
+    body: ResendVerificationRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Resend the verification email."""
+    try:
+        await auth_service.resend_verification_email(db, body.email)
+        return {"message": "If an account exists with that email, a verification email has been sent."}
+    except AuthError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+
+
 @router.post("/login", response_model=AuthResponse)
+@limiter.limit("5/minute")
 async def login(
-    request: LoginRequest,
+    request: Request,
+    body: LoginRequest,
     db: AsyncSession = Depends(get_db),
 ):
     """Login with email and password."""
     try:
         user, token = await auth_service.login_user(
             db=db,
-            email=request.email,
-            password=request.password,
+            email=body.email,
+            password=body.password,
         )
+
+        # Grant free trial on first login if not yet granted
+        await credit_service.grant_free_trial(db, user.id)
+        balance = await credit_service.get_balance_summary(db, user.id)
 
         return AuthResponse(
             access_token=token,
-            user=user_to_dict(user),
+            user=user_to_dict(user, credit_balance=balance),
         )
     except AuthError as e:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(e),
+        )
+
+
+@router.post("/forgot-password")
+@limiter.limit("3/minute")
+async def forgot_password(
+    request: Request,
+    body: ForgotPasswordRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Request a password reset email. Always returns success to prevent email enumeration."""
+    token = await auth_service.request_password_reset(db, body.email)
+    if token:
+        # Look up user name for the email
+        user = await auth_service.get_user_by_email(db, body.email)
+        if user:
+            await send_password_reset_email(user.email, user.name, token)
+    return {"message": "If an account exists with that email, we've sent a password reset link."}
+
+
+@router.post("/reset-password")
+@limiter.limit("5/minute")
+async def reset_password(
+    request: Request,
+    body: ResetPasswordRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Reset password using a valid reset token."""
+    try:
+        await auth_service.reset_password(db, body.token, body.new_password)
+        return {"message": "Password reset successfully. You can now log in with your new password."}
+    except AuthError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e),
         )
 
@@ -154,28 +280,34 @@ async def logout():
 @router.post("/refresh", response_model=AuthResponse)
 async def refresh_token(
     user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
 ):
     """Refresh the JWT token."""
     token = auth_service.create_access_token(user.id)
+    balance = await credit_service.get_balance_summary(db, user.id)
 
     return AuthResponse(
         access_token=token,
-        user=user_to_dict(user),
+        user=user_to_dict(user, credit_balance=balance),
     )
 
 
-@router.get("/me", response_model=UserResponse)
+@router.get("/me")
 async def get_current_user_info(
     user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
 ):
     """Get current user information."""
-    return UserResponse(
-        id=user.id,
-        email=user.email,
-        name=user.name,
-        subscription_tier=user.subscription_tier.value,
-        created_at=user.created_at.isoformat(),
-    )
+    balance = await credit_service.get_balance_summary(db, user.id)
+    return {
+        "id": user.id,
+        "email": user.email,
+        "name": user.name,
+        "subscription_tier": user.subscription_tier.value,
+        "is_admin": user.is_admin,
+        "created_at": user.created_at.isoformat(),
+        "credit_balance": balance,
+    }
 
 
 # Google OAuth endpoints
@@ -276,9 +408,13 @@ async def google_oauth_callback(
         # Create our JWT token
         token = auth_service.create_access_token(user.id)
 
+        # Grant free trial on first OAuth login if not yet granted
+        await credit_service.grant_free_trial(db, user.id)
+        balance = await credit_service.get_balance_summary(db, user.id)
+
         return AuthResponse(
             access_token=token,
-            user=user_to_dict(user),
+            user=user_to_dict(user, credit_balance=balance),
         )
 
     except HTTPException:

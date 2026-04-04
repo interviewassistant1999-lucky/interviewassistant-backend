@@ -40,7 +40,7 @@ class TurnDetectorConfig:
     """Configuration for turn detection."""
     # Silence thresholds
     pause_threshold_ms: int = 800       # Brief pause (might continue)
-    silence_threshold_ms: int = 1500    # Long silence (turn complete)
+    silence_threshold_ms: int = 1000    # Long silence (turn complete)
 
     # Minimum content requirements
     min_words: int = 3                  # Minimum words for a valid turn

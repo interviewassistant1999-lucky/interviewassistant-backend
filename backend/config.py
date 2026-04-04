@@ -1,6 +1,6 @@
 """Configuration management using pydantic-settings."""
 
-from typing import Literal, Optional
+from typing import Dict, Literal, Optional
 from pydantic_settings import BaseSettings
 
 
@@ -8,24 +8,26 @@ class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
 
     # Database settings
-    database_url: str = "sqlite+aiosqlite:///./interview_assistant.db"
+    database_url: str = "postgresql+asyncpg://postgres.qidhgdotizyvyboqyklf:Getitdone%40123@aws-1-ap-south-1.pooler.supabase.com:6543/postgres"
+    #"sqlite+aiosqlite:///./interview_assistant.db"
     database_echo: bool = False  # Set to True for SQL query logging
 
     # Auth settings
-    jwt_secret_key: str = "your-secret-key-change-in-production"  # Generate with: openssl rand -hex 32
+    jwt_secret_key: str = "4775d2c16cd2ca115c18576104eb48fa254602d1d569149246546fbcd628935e"  # Generate with: openssl rand -hex 32
     jwt_expire_minutes: int = 10080  # 7 days
     jwt_algorithm: str = "HS256"
 
     # Google OAuth settings
-    google_client_id: Optional[str] = None
-    google_client_secret: Optional[str] = None
-    google_redirect_uri: str = "http://localhost:3000/auth/callback"
+    google_client_id: Optional[str] = "864559455193-m3llbpl8reb2pk8lo9nnp9ntrsp1ovr3.apps.googleusercontent.com"
+    # interviewAssistant gamil Client ID: 275473031551-bbo9jtfvqomlo8ttcp6kkhajhgq5krjh.apps.googleusercontent.com
+    google_client_secret: Optional[str] = "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"
+    google_redirect_uri: str = "https://hintly.tech/auth/callback"
 
     # Encryption for API keys (Fernet key)
-    encryption_key: Optional[str] = None  # Generate with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    encryption_key: Optional[str] = "F_pAdLIdghZpKBMthXQYGEnIJ1GLGTXAanW-wK9DVKE="  # Generate with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 
     # LLM Provider configuration
-    llm_provider: Literal["openai", "gemini", "adaptive", "mock"] = "mock"
+    llm_provider: Literal["openai", "openai-adaptive", "gemini", "adaptive", "anthropic", "mock"] = "mock"
 
     # OpenAI settings
     openai_api_key: str = ""
@@ -34,33 +36,113 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""
 
     # Groq settings (for Adaptive provider)
-    groq_api_key: str = ""
+    groq_api_key: str = "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"
+
+    # Anthropic settings
+    anthropic_api_key: str = ""
 
     # Rate limiting settings (for Gemini free tier testing)
-    dev_mode: bool = False  # Enable rate-limit-safe testing mode (disable for faster responses)
+    dev_mode: bool = True  # Enable rate-limit-safe testing mode (disable for faster responses)
     rate_limit_rpm: int = 4  # Requests per minute (4 for free tier with buffer)
     audio_buffer_seconds: int = 3  # Seconds of audio to buffer (reduced for faster responses)
 
+    # Deepgram streaming STT (feature flag)
+    use_deepgram_stt: bool = True  # Feature flag: use Deepgram Nova-2 instead of Whisper
+    deepgram_api_key: str = "7e88e45ba43b8fcdd698bb6ef9196c1b2e4070b7"  # Server-side Deepgram API key
+
     # Semantic turn detection settings
     turn_detection_enabled: bool = True  # Enable semantic turn detection (reduces jittery suggestions)
-    turn_silence_threshold_ms: int = 1500  # Silence duration to consider turn complete (ms)
+    turn_silence_threshold_ms: int = 1000  # Silence duration to consider turn complete (ms)
     turn_min_words: int = 3  # Minimum words for a valid turn
 
     # Transcript grouping settings (for visual separation in UI)
     # Option A (legacy): Use transcript arrival time - less accurate due to audio buffering
     # Option B1 (recommended): Use frontend VAD speech timing - more accurate
     use_speech_timing_for_turns: bool = True  # True = B1 (VAD timing), False = A (transcript timing)
-    speech_silence_threshold_ms: int = 3000  # Silence duration to consider new turn (ms) - for B1
+    speech_silence_threshold_ms: int = 1500  # Silence duration to consider new turn (ms) - for B1
 
     # MongoDB settings (for interview question bank)
-    mongodb_uri: Optional[str] = None
+    mongodb_uri: Optional[str] = "mongodb+srv://myuser1:12345@cluster0.xhjb19m.mongodb.net/?appName=Cluster0"
     mongodb_db_name: str = "interview_assistant"
 
+    # Resend email settings
+    resend_api_key: Optional[str] = "re_jA8A76pe_7fHggf1xmyxtye8mjjwXsW7m"
+    email_from: str = "Hintly <contact@mailing.hintly.tech>"
+    support_email: str = "interviewassistant1999@gmail.com"
+    email_verification_expiry_hours: int = 24
+    frontend_url: str = "https://hintly.tech"
+
+    # PhonePe payment gateway settings
+    phonepe_merchant_id: str = ""
+    phonepe_salt_key: str = ""
+    phonepe_salt_index: str = "1"
+    phonepe_base_url: str = "https://api-preprod.phonepe.com/apis/pg-sandbox"  # Use production URL in prod
+    backend_url: str = "http://localhost:8000"
+
+    # Credit system settings
+    free_trial_minutes: int = 10
+    free_trial_expiry_days: int = 7
+    credit_deduction_interval_seconds: int = 30
+    credit_grace_period_seconds: int = 60
+
+    # Sentry error monitoring
+    NEXT_PUBLIC_SENTRY_DSN: str = "https://9bf5049569b0c27e7945f97d8444d673@o4510995025035264.ingest.us.sentry.io/4510995038535680"
+    SENTRY_ORG: str = "hintly-ev"
+    SENTRY_PROJECT: str = "hintly-frontend"
+    SENTRY_AUTH_TOKEN: str = "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"
+    
+    sentry_dsn: Optional[str] = "https://dfb264e73c5159d477d99815d00800fb@o4510995025035264.ingest.us.sentry.io/4510995087753216"
+
+    # Compact verbosity: tighter token limits & stricter length instructions
+    # Set USE_COMPACT_VERBOSITY=true in env to activate
+    use_compact_verbosity: bool = False
+    USE_COMPACT_VERBOSITY: bool = False
+
+    # Posthog monitoring
+    NEXT_PUBLIC_POSTHOG_KEY: str = "phc_aXpXrkDsMgBJYYJzx7AgbFQGBWj6VypBINJyogokBKm"
+
     # General settings
-    allowed_origins: str = "http://localhost:3000,http://localhost:3001,http://localhost:3002,http://localhost:3003"
+    allowed_origins: str = "http://localhost:3000,http://localhost:3001,http://localhost:3002,http://localhost:3003,https://interview-assistant-frontend-phi.vercel.app,https://hintly.tech,https://www.hintly.tech"
+
+    # Prompt template overrides (for A/B testing different prompts)
+    # Set these to the variable name defined in prompts.py
+    # e.g., "PERSONALIZED_GENERATED_SYSTEM_PROMPT_CLAUDE" or "PERSONALIZED_GENERATED_SYSTEM_PROMPT"
+    personalized_prompt_template: str = "PERSONALIZED_GENERATED_SYSTEM_PROMPT_CHATGPT_SWE"  # Default fallback
+    coach_prompt_template: str = "COACH_MODE_PROMPT_CLAUDE"
+
+    # Role-based prompt template mapping (role_type → prompt template variable name in prompts.py)
+    # SWE-related roles use the SWE prompt, TPM roles use the TPM prompt, others use Claude prompt
+    role_prompt_mapping: Dict[str, str] = {
+        "software_engineer": "PERSONALIZED_GENERATED_SYSTEM_PROMPT_CHATGPT_SWE",
+        "senior_software_engineer": "PERSONALIZED_GENERATED_SYSTEM_PROMPT_CHATGPT_SWE",
+        "senior_swe_l3_l5": "PERSONALIZED_GENERATED_SYSTEM_PROMPT_CHATGPT_SWE",
+        "staff_engineer": "PERSONALIZED_GENERATED_SYSTEM_PROMPT_CHATGPT_SWE",
+        "data_scientist": "PERSONALIZED_GENERATED_SYSTEM_PROMPT_CHATGPT_SWE",
+        "data_engineer": "PERSONALIZED_GENERATED_SYSTEM_PROMPT_CHATGPT_SWE",
+        "machine_learning_engineer": "PERSONALIZED_GENERATED_SYSTEM_PROMPT_CHATGPT_SWE",
+        "engineering_manager": "PERSONALIZED_GENERATED_SYSTEM_PROMPT_CHATGPT_SWE",
+        "technical_program_manager": "PERSONALIZED_GENERATED_SYSTEM_PROMPT_CHATGPT_TPM",
+        "senior_technical_program_manager": "PERSONALIZED_GENERATED_SYSTEM_PROMPT_CHATGPT_TPM",
+        "product_manager": "PERSONALIZED_GENERATED_SYSTEM_PROMPT_CLAUDE",
+        "other": "PERSONALIZED_GENERATED_SYSTEM_PROMPT_CLAUDE",
+    }
+
+    # ── Conversation Intelligence feature flags ──
+    # All default to False for safe rollback. Enable via env vars.
+    enable_conversation_memory: bool = True      # Track conversation history in session
+    enable_intent_classification: bool = True     # 7-category intent classification
+    enable_adaptive_tokens: bool = True           # Dynamic max_tokens per intent
+    enable_challenge_strategy: bool = True        # Challenge/pushback response strategy
+    enable_conversation_arc: bool = True          # Interview phase tracking
+    conversation_memory_turns: int = 5             # Number of recent turns in Tier 1 buffer
 
     # Legacy setting for backwards compatibility
     use_mock_openai: bool = True  # Deprecated: use llm_provider instead
+
+    @property
+    def clean_frontend_url(self) -> str:
+        """Frontend URL with trailing slashes/paths stripped to prevent broken email links."""
+        return self.frontend_url.rstrip('/')
 
     @property
     def origins_list(self) -> list[str]:

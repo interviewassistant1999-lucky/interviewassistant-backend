@@ -29,7 +29,7 @@ from services.rate_limiter import (
     get_rate_limiter,
     get_transcript_cache,
 )
-from services.prompts import get_prompt, get_prompt_with_prep, get_response_format, format_suggestion_for_display, DEFAULT_PROMPT
+from services.prompts import get_prompt, get_prompt_with_prep, get_response_format, format_suggestion_for_display, DEFAULT_PROMPT, get_max_tokens_for_verbosity
 
 logger = logging.getLogger(__name__)
 
@@ -59,11 +59,7 @@ def pcm16_to_wav(pcm_bytes: bytes, sample_rate: int = 24000, channels: int = 1) 
 
 def get_max_tokens(verbosity: str) -> int:
     """Get max response tokens based on verbosity setting."""
-    return {
-        "concise": 150,
-        "moderate": 300,
-        "detailed": 500,
-    }.get(verbosity, 300)
+    return get_max_tokens_for_verbosity(verbosity)
 
 
 def build_instructions(
@@ -221,6 +217,9 @@ class GeminiClient:
         verbosity: str = "moderate",
         prompt_key: str = None,
         pre_prepared_answers: str = "",
+        company_name: str = "",
+        role_type: str = "",
+        round_type: str = "",
     ) -> bool:
         """Initialize Gemini client and start session.
 
@@ -231,6 +230,9 @@ class GeminiClient:
             verbosity: Response length (concise/moderate/detailed)
             prompt_key: Which prompt style to use (candidate/coach/star)
             pre_prepared_answers: Formatted pre-prepared Q&A to append to prompt
+            company_name: Target company name
+            role_type: Role being interviewed for
+            round_type: Interview round type
         """
         try:
             # Configure Gemini API - use user's key if provided
@@ -242,9 +244,15 @@ class GeminiClient:
 
             # Build system instructions using prompts module
             self._instructions = build_instructions(
-                job_description, resume, work_experience, verbosity, prompt_key, pre_prepared_answers
+                job_description, resume, work_experience, verbosity, prompt_key, pre_prepared_answers,
             )
             self._verbosity = verbosity
+
+            logger.info(f"[GEMINI] System prompt config: prompt_key={self._prompt_key}, verbosity={verbosity}, "
+                        f"company={company_name or 'N/A'}, role={role_type or 'N/A'}, "
+                        f"round={round_type or 'N/A'}, prep_answers={len(pre_prepared_answers)} chars")
+            logger.info(f"\n{'='*80}\n[GEMINI] FULL SYSTEM PROMPT BEING SENT TO LLM:\n{'='*80}\n"
+                        f"{self._instructions}\n{'='*80}\n[GEMINI] END OF SYSTEM PROMPT\n{'='*80}")
 
             # Initialize the model
             # Try different model names for compatibility (ordered by preference)
@@ -328,7 +336,7 @@ class GeminiClient:
             self._connected = False
             return False
 
-    async def send_audio(self, audio_data: bytes) -> None:
+    async def send_audio(self, audio_data: bytes, speaker: str = "interviewer") -> None:
         """Process audio data and generate transcription/suggestions.
 
         Accumulates audio chunks and processes them periodically using
@@ -910,6 +918,9 @@ class GeminiTextClient:
         verbosity: str = "moderate",
         prompt_key: str = None,
         pre_prepared_answers: str = "",
+        company_name: str = "",
+        role_type: str = "",
+        round_type: str = "",
     ) -> bool:
         """Initialize Gemini for text-based suggestion generation.
 
@@ -920,14 +931,21 @@ class GeminiTextClient:
             verbosity: Response length (concise/moderate/detailed)
             prompt_key: Which prompt style to use (candidate/coach/star)
             pre_prepared_answers: Formatted pre-prepared Q&A to append to prompt
+            company_name: Target company name
+            role_type: Role being interviewed for
+            round_type: Interview round type
         """
         try:
             genai.configure(api_key=settings.gemini_api_key)
 
             self._prompt_key = prompt_key or DEFAULT_PROMPT
             instructions = build_instructions(
-                job_description, resume, work_experience, verbosity, prompt_key, pre_prepared_answers
+                job_description, resume, work_experience, verbosity, prompt_key, pre_prepared_answers,
             )
+
+            logger.info(f"[GEMINI-TEXT] System prompt config: prompt_key={self._prompt_key}, verbosity={verbosity}")
+            logger.info(f"\n{'='*80}\n[GEMINI-TEXT] FULL SYSTEM PROMPT BEING SENT TO LLM:\n{'='*80}\n"
+                        f"{instructions}\n{'='*80}\n[GEMINI-TEXT] END OF SYSTEM PROMPT\n{'='*80}")
 
             # Try different model names for compatibility
             model_names = [
@@ -971,7 +989,7 @@ class GeminiTextClient:
             logger.error(f"Failed to connect to Gemini: {e}")
             return False
 
-    async def send_audio(self, audio_data: bytes) -> None:
+    async def send_audio(self, audio_data: bytes, speaker: str = "interviewer") -> None:
         """For text-only client, audio is ignored."""
         pass
 

@@ -10,7 +10,7 @@ import websockets
 from websockets.client import WebSocketClientProtocol
 
 from config import settings
-from services.prompts import get_prompt, get_prompt_with_prep, DEFAULT_PROMPT
+from services.prompts import get_prompt, get_prompt_with_prep, DEFAULT_PROMPT, get_max_tokens_for_verbosity
 
 logger = logging.getLogger(__name__)
 
@@ -22,11 +22,7 @@ OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-pr
 
 def get_max_tokens(verbosity: str) -> int:
     """Get max response tokens based on verbosity setting."""
-    return {
-        "concise": 200,
-        "moderate": 400,
-        "detailed": 600,
-    }.get(verbosity, 400)
+    return get_max_tokens_for_verbosity(verbosity)
 
 
 def build_instructions(
@@ -36,6 +32,9 @@ def build_instructions(
     verbosity: str = "moderate",
     prompt_key: str = None,
     pre_prepared_answers: str = "",
+    company_name: str = "",
+    role_type: str = "",
+    round_type: str = "",
 ) -> str:
     """Build the system instructions with user context.
 
@@ -46,6 +45,9 @@ def build_instructions(
         verbosity: Response length (concise/moderate/detailed)
         prompt_key: Which prompt style to use (candidate/coach/star)
         pre_prepared_answers: Formatted pre-prepared Q&A to append
+        company_name: Target company name
+        role_type: Role being interviewed for
+        round_type: Interview round type
 
     Returns:
         Formatted system prompt string
@@ -57,6 +59,9 @@ def build_instructions(
         work_experience=work_experience,
         verbosity=verbosity,
         pre_prepared_answers=pre_prepared_answers,
+        company_name=company_name,
+        role_type=role_type,
+        round_type=round_type,
     )
 
 
@@ -87,6 +92,9 @@ class OpenAIRealtimeClient:
         verbosity: str = "moderate",
         prompt_key: str = None,
         pre_prepared_answers: str = "",
+        company_name: str = "",
+        role_type: str = "",
+        round_type: str = "",
     ) -> bool:
         """Establish connection to OpenAI Realtime API.
 
@@ -97,6 +105,9 @@ class OpenAIRealtimeClient:
             verbosity: Response length (concise/moderate/detailed)
             prompt_key: Which prompt style to use (candidate/coach/star)
             pre_prepared_answers: Formatted pre-prepared Q&A to append to prompt
+            company_name: Target company name
+            role_type: Role being interviewed for
+            round_type: Interview round type
         """
         try:
             # Use user's API key if provided, otherwise fall back to server's key
@@ -115,7 +126,8 @@ class OpenAIRealtimeClient:
 
             # Send session configuration
             await self._send_session_update(
-                job_description, resume, work_experience, verbosity, prompt_key, pre_prepared_answers
+                job_description, resume, work_experience, verbosity, prompt_key, pre_prepared_answers,
+                company_name, role_type, round_type,
             )
 
             logger.info(f"Connected to OpenAI Realtime API (prompt: {self._prompt_key})")
@@ -134,14 +146,24 @@ class OpenAIRealtimeClient:
         verbosity: str,
         prompt_key: str = None,
         pre_prepared_answers: str = "",
+        company_name: str = "",
+        role_type: str = "",
+        round_type: str = "",
     ) -> None:
         """Send session.update to configure the session."""
         if not self._ws:
             return
 
         instructions = build_instructions(
-            job_description, resume, work_experience, verbosity, prompt_key, pre_prepared_answers
+            job_description, resume, work_experience, verbosity, prompt_key, pre_prepared_answers,
+            company_name, role_type, round_type,
         )
+
+        logger.info(f"[OPENAI] System prompt config: prompt_key={prompt_key or 'default'}, verbosity={verbosity}, "
+                    f"company={company_name or 'N/A'}, role={role_type or 'N/A'}, "
+                    f"round={round_type or 'N/A'}, prep_answers={len(pre_prepared_answers)} chars")
+        logger.info(f"\n{'='*80}\n[OPENAI] FULL SYSTEM PROMPT BEING SENT TO LLM:\n{'='*80}\n"
+                    f"{instructions}\n{'='*80}\n[OPENAI] END OF SYSTEM PROMPT\n{'='*80}")
 
         session_config = {
             "type": "session.update",
@@ -164,7 +186,7 @@ class OpenAIRealtimeClient:
         await self._ws.send(json.dumps(session_config))
         logger.debug("Sent session.update to OpenAI")
 
-    async def send_audio(self, audio_data: bytes) -> None:
+    async def send_audio(self, audio_data: bytes, speaker: str = "interviewer") -> None:
         """Send audio data to OpenAI."""
         if not self._ws or not self._connected:
             return
@@ -300,6 +322,9 @@ class MockOpenAIClient:
         verbosity: str = "moderate",
         prompt_key: str = None,
         pre_prepared_answers: str = "",
+        company_name: str = "",
+        role_type: str = "",
+        round_type: str = "",
     ) -> bool:
         """Simulate connection to OpenAI."""
         self._connected = True
@@ -309,7 +334,7 @@ class MockOpenAIClient:
         logger.info(f"[MOCK] Connected to Mock OpenAI client (prompt: {self._prompt_key})")
         return True
 
-    async def send_audio(self, audio_data: bytes) -> None:
+    async def send_audio(self, audio_data: bytes, speaker: str = "interviewer") -> None:
         """Receive audio data and simulate transcription after enough chunks."""
         if not self._connected:
             return
@@ -400,17 +425,20 @@ def get_openai_client():
         return OpenAIRealtimeClient()
 
 
-def get_llm_client(provider: str = None, api_key: str = None):
+def get_llm_client(provider: str = None, api_key: str = None, whisper_api_key: str = None):
     """Factory function to get the appropriate LLM client based on provider.
 
     Args:
         provider: The LLM provider to use:
             - 'adaptive': Groq Whisper + Llama (fastest, recommended)
+            - 'openai-adaptive': OpenAI Whisper + GPT-4o (standard REST)
+            - 'anthropic': Claude + Whisper (Groq/OpenAI for STT)
             - 'gemini-live': Gemini Live API (real-time WebSocket)
             - 'gemini': Standard Gemini (batch mode)
-            - 'openai': OpenAI Realtime API
+            - 'openai': OpenAI Realtime API (legacy WebSocket)
             - 'mock': Demo mode (no API key needed)
         api_key: Optional API key to use instead of server's default
+        whisper_api_key: Optional separate Whisper API key (for Anthropic provider)
 
     Returns:
         An LLM client instance.
@@ -426,15 +454,37 @@ def get_llm_client(provider: str = None, api_key: str = None):
         return MockOpenAIClient()
 
     elif provider == "adaptive":
-        # Adaptive: Groq Whisper + Llama (ultra-fast)
+        # Adaptive: Groq Whisper + Llama (ultra-fast, dev/internal use)
         try:
             from services.groq_client import GroqAdaptiveClient
             logger.info("Using Adaptive client (Groq Whisper + Llama)")
             return GroqAdaptiveClient(api_key=api_key)
         except ImportError as e:
             logger.error(f"Failed to import GroqAdaptiveClient: {e}")
-            logger.warning("Falling back to Gemini")
-            provider = "gemini"
+            logger.warning("Falling back to Mock client")
+            return MockOpenAIClient()
+
+    elif provider == "openai-adaptive":
+        # OpenAI Adaptive: Whisper + GPT-4o (standard REST APIs)
+        try:
+            from services.openai_adaptive_client import OpenAIAdaptiveClient
+            logger.info("Using OpenAI Adaptive client (Whisper + GPT-4o)")
+            return OpenAIAdaptiveClient(api_key=api_key)
+        except ImportError as e:
+            logger.error(f"Failed to import OpenAIAdaptiveClient: {e}")
+            logger.warning("Falling back to OpenAI Realtime")
+            provider = "openai"
+
+    elif provider == "anthropic":
+        # Anthropic: Claude + Whisper (Groq or OpenAI for STT)
+        try:
+            from services.anthropic_adaptive_client import AnthropicAdaptiveClient
+            logger.info("Using Anthropic Adaptive client (Claude + Whisper)")
+            return AnthropicAdaptiveClient(api_key=api_key, whisper_api_key=whisper_api_key)
+        except ImportError as e:
+            logger.error(f"Failed to import AnthropicAdaptiveClient: {e}")
+            logger.warning("Falling back to Mock client")
+            return MockOpenAIClient()
 
     elif provider == "gemini-live":
         # Gemini Live API - real-time WebSocket streaming

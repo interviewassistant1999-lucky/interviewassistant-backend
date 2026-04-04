@@ -185,7 +185,7 @@ class GeminiLiveClient:
             self._connected = False
             return False
 
-    async def send_audio(self, audio_data: bytes) -> None:
+    async def send_audio(self, audio_data: bytes, speaker: str = "interviewer") -> None:
         """Send audio data to Gemini Live API in real-time.
 
         Audio is sent immediately without buffering for instant processing.

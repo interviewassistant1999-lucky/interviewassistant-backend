@@ -97,6 +97,36 @@ async def validate_gemini_key(api_key: str) -> tuple[bool, str]:
         return False, f"Validation error: {str(e)}"
 
 
+async def validate_anthropic_key(api_key: str) -> tuple[bool, str]:
+    """Validate an Anthropic API key by making a minimal test request."""
+    import httpx
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": api_key,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                json={
+                    "model": "claude-haiku-4-5-20251001",
+                    "max_tokens": 1,
+                    "messages": [{"role": "user", "content": "hi"}],
+                },
+                timeout=10.0,
+            )
+            if response.status_code == 200:
+                return True, "API key is valid"
+            elif response.status_code == 401:
+                return False, "Invalid API key"
+            else:
+                # Non-auth errors (rate limit, etc.) mean the key is valid
+                return True, "API key accepted"
+    except Exception as e:
+        return False, f"Validation error: {str(e)}"
+
+
 @router.get("/api-keys", response_model=list[APIKeyInfo])
 async def list_api_keys(
     user: User = Depends(require_auth),
@@ -145,7 +175,7 @@ async def store_api_key(
     except ValueError:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid provider: {provider}. Valid options: openai, gemini, groq",
+            detail=f"Invalid provider: {provider}. Valid options: openai, gemini, groq, anthropic",
         )
 
     # Validate the API key
@@ -155,6 +185,8 @@ async def store_api_key(
         valid, message = await validate_openai_key(request.api_key)
     elif llm_provider == LLMProvider.GEMINI:
         valid, message = await validate_gemini_key(request.api_key)
+    elif llm_provider == LLMProvider.ANTHROPIC:
+        valid, message = await validate_anthropic_key(request.api_key)
     else:
         valid, message = True, "Validation skipped"
 
@@ -267,6 +299,8 @@ async def validate_api_key(
         valid, message = await validate_openai_key(api_key)
     elif llm_provider == LLMProvider.GEMINI:
         valid, message = await validate_gemini_key(api_key)
+    elif llm_provider == LLMProvider.ANTHROPIC:
+        valid, message = await validate_anthropic_key(api_key)
     else:
         valid, message = True, "Validation skipped"
 

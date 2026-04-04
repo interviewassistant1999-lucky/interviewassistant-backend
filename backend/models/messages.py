@@ -60,6 +60,7 @@ class SessionReadyMessage(BaseModel):
     """Message indicating session is ready."""
 
     type: Literal["session.ready"] = "session.ready"
+    sttMode: str = "chunked"  # "chunked" (Whisper) or "streaming" (Deepgram)
 
 
 class TranscriptDeltaMessage(BaseModel):
@@ -81,6 +82,8 @@ class SuggestionMessage(BaseModel):
     response: str
     keyPoints: list[str]
     followUp: str
+    intent: Optional[str] = None       # Classified intent (new_question, follow_up, etc.)
+    question: Optional[str] = None     # The interviewer question this responds to
 
 
 class ConnectionStatusMessage(BaseModel):

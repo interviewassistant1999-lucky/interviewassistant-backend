@@ -1,14 +1,14 @@
 """Session management API routes."""
 
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import PlainTextResponse, JSONResponse
 from pydantic import BaseModel
-from sqlalchemy import select, desc
+from sqlalchemy import select, desc, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.database import get_db
@@ -42,6 +42,43 @@ class SessionDetail(BaseModel):
     provider_used: Optional[str]
     created_at: str
     ended_at: Optional[str]
+
+
+@router.get("/stats")
+async def get_session_stats(
+    user: User = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get aggregated session stats (total sessions, practice time, this week)."""
+    week_ago = datetime.utcnow() - timedelta(days=7)
+
+    # Single query: total count + total duration
+    total_result = await db.execute(
+        select(
+            func.count(InterviewSession.id),
+            func.coalesce(func.sum(InterviewSession.duration_seconds), 0),
+        ).where(InterviewSession.user_id == user.id)
+    )
+    total_row = total_result.one()
+
+    # Single query: this week count + duration
+    week_result = await db.execute(
+        select(
+            func.count(InterviewSession.id),
+            func.coalesce(func.sum(InterviewSession.duration_seconds), 0),
+        ).where(
+            InterviewSession.user_id == user.id,
+            InterviewSession.created_at >= week_ago,
+        )
+    )
+    week_row = week_result.one()
+
+    return {
+        "totalSessions": total_row[0],
+        "totalMinutes": total_row[1] // 60,
+        "thisWeekSessions": week_row[0],
+        "thisWeekMinutes": week_row[1] // 60,
+    }
 
 
 @router.get("", response_model=list[SessionSummary])

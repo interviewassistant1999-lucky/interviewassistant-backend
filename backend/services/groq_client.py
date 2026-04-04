@@ -19,10 +19,45 @@ from typing import Optional
 import httpx
 
 from config import settings
-from services.prompts import get_prompt, get_prompt_with_prep, get_response_format, format_suggestion_for_display, DEFAULT_PROMPT
+from services.prompts import get_prompt, get_prompt_with_prep, get_response_format, format_suggestion_for_display, uses_json_response, is_not_a_question, DEFAULT_PROMPT, get_max_tokens_for_verbosity
 from services.turn_detector import TurnDetector, TurnDetectorConfig
 
 logger = logging.getLogger(__name__)
+
+# Common noise transcriptions from Whisper that should be filtered out.
+# These are typically produced when background noise or silence is transcribed.
+NOISE_TRANSCRIPTS = {
+    "you", "the", "uh", "um", "oh", "ah", "hmm", "huh",
+    "thank you.", "thanks.", "bye.", "okay.", "yeah.",
+    "thank you for watching.", "thanks for watching.",
+    "please subscribe.", "subscribe.",
+    "like and subscribe.", "see you next time.",
+    "thank you for listening.", "thanks for listening.",
+    # Whisper hallucinations on silence/noise
+    "...", ".", ",", "!", "?",
+    "you.", "the.", "i.", "a.", "it.",
+    "so.", "and.", "but.", "or.",
+}
+
+# Minimum word count for a valid transcript (filters out single-word noise)
+MIN_TRANSCRIPT_WORDS = 2
+
+
+def is_noise_transcript(transcript: str) -> bool:
+    """Check if a transcript is likely noise rather than real speech.
+
+    Returns True if the transcript should be filtered out.
+    """
+    cleaned = transcript.strip().lower()
+    if not cleaned:
+        return True
+    if cleaned in NOISE_TRANSCRIPTS:
+        return True
+    # Filter single-word transcripts (usually noise)
+    if len(cleaned.split()) < MIN_TRANSCRIPT_WORDS:
+        return True
+    return False
+
 
 # Groq API endpoints
 GROQ_API_BASE = "https://api.groq.com/openai/v1"
@@ -147,6 +182,9 @@ class GroqLLMClient:
         verbosity: str = "moderate",
         prompt_key: str = None,
         pre_prepared_answers: str = "",
+        company_name: str = "",
+        role_type: str = "",
+        round_type: str = "",
     ):
         """Set the system prompt with interview context.
 
@@ -157,8 +195,12 @@ class GroqLLMClient:
             verbosity: Response length (concise/moderate/detailed)
             prompt_key: Which prompt to use (candidate/coach/star)
             pre_prepared_answers: Formatted pre-prepared Q&A to append to prompt
+            company_name: Target company name
+            role_type: Role being interviewed for
+            round_type: Interview round type
         """
         self._prompt_key = prompt_key or DEFAULT_PROMPT
+        self._verbosity = verbosity
         self._system_prompt = get_prompt_with_prep(
             prompt_key=self._prompt_key,
             job_description=job_description[:2000] if job_description else "",
@@ -166,13 +208,22 @@ class GroqLLMClient:
             work_experience=work_experience[:2000] if work_experience else "",
             verbosity=verbosity,
             pre_prepared_answers=pre_prepared_answers,
+            company_name=company_name,
+            role_type=role_type,
+            round_type=round_type,
         )
+        logger.info(f"[GROQ-LLM] System prompt set: {len(self._system_prompt)} chars, "
+                     f"company={company_name or 'N/A'}, role={role_type or 'N/A'}, "
+                     f"round={round_type or 'N/A'}, prep_answers={len(pre_prepared_answers)} chars")
+        logger.info(f"\n{'='*80}\n[GROQ-LLM] FULL SYSTEM PROMPT BEING SENT TO LLM:\n{'='*80}\n"
+                     f"{self._system_prompt}\n{'='*80}\n[GROQ-LLM] END OF SYSTEM PROMPT\n{'='*80}")
 
-    async def get_suggestion(self, transcript: str) -> Optional[dict]:
+    async def get_suggestion(self, transcript: str, conversation_context: str = "") -> Optional[dict]:
         """Get a suggestion for the given transcript.
 
         Args:
             transcript: The interviewer's statement/question
+            conversation_context: Recent conversation history (both speakers) for follow-up context
 
         Returns:
             Dict with is_question, suggestion, and formatted_text, or None if failed
@@ -182,16 +233,47 @@ class GroqLLMClient:
 
             client = await self._get_client()
 
-            payload = {
-                "model": LLAMA_MODEL,
-                "messages": [
-                    {"role": "system", "content": self._system_prompt},
-                    {"role": "user", "content": f"The interviewer said: \"{transcript}\"\n\nAnalyze and respond in JSON format."}
-                ],
-                "temperature": 0.7,
-                "max_tokens": 600,
-                "response_format": {"type": "json_object"}
-            }
+            # Check if this prompt expects JSON or plain text
+            is_json = uses_json_response(self._prompt_key)
+
+            # Build context prefix if conversation history is available
+            context_prefix = ""
+            if conversation_context:
+                context_prefix = (
+                    f"Here is the recent conversation for context (use this to understand "
+                    f"what has already been discussed and what the candidate has said):\n"
+                    f"---\n{conversation_context}\n---\n\n"
+                )
+
+            max_tokens = get_max_tokens_for_verbosity(getattr(self, '_verbosity', 'moderate'))
+
+            if is_json:
+                # JSON mode: structured response with is_question detection
+                user_content = f'{context_prefix}The interviewer said: "{transcript}"\n\nAnalyze and respond in JSON format.'
+                payload = {
+                    "model": LLAMA_MODEL,
+                    "messages": [
+                        {"role": "system", "content": self._system_prompt},
+                        {"role": "user", "content": user_content},
+                    ],
+                    "temperature": 0.7,
+                    "max_tokens": max_tokens,
+                    "response_format": {"type": "json_object"},
+                }
+            else:
+                # Plain text mode (personalized): direct spoken answer
+                user_content = f'{context_prefix}The interviewer said: "{transcript}"'
+                payload = {
+                    "model": LLAMA_MODEL,
+                    "messages": [
+                        {"role": "system", "content": self._system_prompt},
+                        {"role": "user", "content": user_content},
+                    ],
+                    "temperature": 0.7,
+                    "max_tokens": max_tokens,
+                }
+
+            logger.info(f"[GROQ-LLM] Request to LLM - model={LLAMA_MODEL}, json_mode={is_json}, user_content='{user_content[:100]}...'")
 
             response = await client.post(GROQ_CHAT_URL, json=payload)
 
@@ -201,20 +283,39 @@ class GroqLLMClient:
             if response.status_code == 200:
                 data = response.json()
                 content = data["choices"][0]["message"]["content"]
-                logger.info(f"[GROQ-LLAMA] Suggestion in {elapsed:.0f}ms")
+                logger.info(f"[GROQ-LLAMA] Suggestion in {elapsed:.0f}ms (json={is_json})")
 
-                result = json.loads(content)
+                if is_json:
+                    # Parse structured JSON response
+                    result = json.loads(content)
 
-                # Format the suggestion for display using the appropriate format
-                if result.get("is_question") and result.get("suggestion"):
-                    response_format = get_response_format(self._prompt_key)
-                    formatted_text = format_suggestion_for_display(
-                        result["suggestion"],
-                        response_format
-                    )
-                    result["formatted_text"] = formatted_text
+                    # Format the suggestion for display using the appropriate format
+                    if result.get("is_question") and result.get("suggestion"):
+                        response_format = get_response_format(self._prompt_key)
+                        formatted_text = format_suggestion_for_display(
+                            result["suggestion"],
+                            response_format,
+                        )
+                        result["formatted_text"] = formatted_text
 
-                return result
+                    return result
+                else:
+                    plain_text = content.strip()
+                    if not plain_text:
+                        return None
+
+                    # Check for question gate sentinel
+                    if is_not_a_question(plain_text):
+                        logger.info("[GROQ-LLAMA] Not a question (sentinel), skipping suggestion")
+                        return {"is_question": False, "suggestion": None}
+
+                    logger.info(f"[GROQ-LLAMA] Plain text response: '{plain_text[:80]}...'")
+
+                    return {
+                        "is_question": True,
+                        "suggestion": {"response": plain_text},
+                        "formatted_text": plain_text,
+                    }
             else:
                 logger.error(f"[GROQ-LLAMA] Error {response.status_code}: {response.text}")
                 return None
@@ -251,6 +352,7 @@ class GroqAdaptiveClient:
         self._api_key = api_key  # User's API key or None
         self._connected = False
         self._transcription_client: Optional[GroqTranscriptionClient] = None
+        self._deepgram_client = None  # DeepgramStreamingClient when feature flag is on
         self._llm_client: Optional[GroqLLMClient] = None
         self._gemini_fallback = None  # Lazy loaded
         self._message_queue: asyncio.Queue = asyncio.Queue()
@@ -267,9 +369,29 @@ class GroqAdaptiveClient:
         self._frontend_is_speaking = True  # Assume speaking until told otherwise
         self._frontend_silence_ms = 0.0
 
+        # Speaker tracking for Issue #3: only suggest on interviewer speech
+        self._current_speaker = "interviewer"  # Default assumption
+
+        # Conversation history for LLM context (both speakers)
+        self._conversation_history: list = []  # [{speaker, text}]
+
+        # Deepgram streaming state
+        self._deepgram_turn_buffer = ""  # Accumulates text between UtteranceEnd events
+        self._deepgram_needs_new_turn = True  # First transcript is always a new turn
+
+        # Per-segment speaker voting for Deepgram mode
+        # Only accumulates votes while Deepgram is actively producing a segment
+        self._segment_speaker_votes: list = []
+        self._deepgram_segment_active = False
+
     @property
     def is_connected(self) -> bool:
         return self._connected
+
+    @property
+    def stt_mode(self) -> str:
+        """Return the STT mode: 'streaming' for Deepgram, 'chunked' for Whisper."""
+        return "streaming" if self._deepgram_client else "chunked"
 
     def update_speech_timing(self, is_speaking: bool, silence_ms: float) -> None:
         """Update speech timing from frontend VAD.
@@ -286,8 +408,17 @@ class GroqAdaptiveClient:
 
         This is called periodically when speech timing updates arrive,
         even if no audio is being sent (during silence).
+        Note: We do NOT check _current_speaker here because it can be stale/wrong.
+        The last audio chunk before silence may be misclassified as 'user' due to
+        low-signal mic noise exceeding the now-silent system audio. The TurnDetector
+        only accumulates interviewer text (user speech is filtered in send_audio),
+        so if it has content, that content is from the interviewer.
         """
         if not self._connected or not self._turn_detector:
+            return
+
+        # Skip when Deepgram handles turn detection via UtteranceEnd
+        if self._deepgram_client:
             return
 
         # Only check if using frontend VAD timing
@@ -312,6 +443,9 @@ class GroqAdaptiveClient:
         verbosity: str = "moderate",
         prompt_key: str = None,
         pre_prepared_answers: str = "",
+        company_name: str = "",
+        role_type: str = "",
+        round_type: str = "",
     ) -> bool:
         """Initialize Groq clients.
 
@@ -322,6 +456,9 @@ class GroqAdaptiveClient:
             verbosity: Response length (concise/moderate/detailed)
             prompt_key: Which prompt style to use (candidate/coach/star)
             pre_prepared_answers: Formatted pre-prepared Q&A to append to prompt
+            company_name: Target company name
+            role_type: Role being interviewed for
+            round_type: Interview round type
         """
         try:
             # Use user's API key if provided, otherwise fall back to server's key
@@ -331,8 +468,32 @@ class GroqAdaptiveClient:
                 logger.error("[GROQ-ADAPTIVE] No GROQ_API_KEY configured")
                 return False
 
-            # Initialize clients
-            self._transcription_client = GroqTranscriptionClient(groq_api_key)
+            # Initialize STT client — Deepgram (streaming) or Whisper (batch)
+            if settings.use_deepgram_stt and settings.deepgram_api_key:
+                try:
+                    from services.deepgram_client import DeepgramStreamingClient
+                    self._deepgram_client = DeepgramStreamingClient(settings.deepgram_api_key)
+                    dg_connected = await self._deepgram_client.connect(
+                        on_transcript=self._on_deepgram_transcript,
+                        on_utterance_end=self._on_deepgram_utterance_end,
+                    )
+                    if dg_connected:
+                        self._deepgram_turn_buffer = ""
+                        self._deepgram_needs_new_turn = True
+                        self._segment_speaker_votes = []
+                        self._deepgram_segment_active = False
+                        logger.info("[GROQ-ADAPTIVE] Using Deepgram Nova-2 for STT (streaming)")
+                    else:
+                        logger.warning("[GROQ-ADAPTIVE] Deepgram connection failed, falling back to Whisper")
+                        self._deepgram_client = None
+                except Exception as e:
+                    logger.warning(f"[GROQ-ADAPTIVE] Deepgram init failed, falling back to Whisper: {e}")
+                    self._deepgram_client = None
+
+            # Whisper fallback (or primary when Deepgram is disabled)
+            if not self._deepgram_client:
+                self._transcription_client = GroqTranscriptionClient(groq_api_key)
+
             self._llm_client = GroqLLMClient(groq_api_key)
 
             # Set context for suggestions with prompt selection
@@ -343,6 +504,9 @@ class GroqAdaptiveClient:
                 verbosity=verbosity,
                 prompt_key=prompt_key,
                 pre_prepared_answers=pre_prepared_answers,
+                company_name=company_name,
+                role_type=role_type,
+                round_type=round_type,
             )
 
             # Initialize semantic turn detector (if enabled)
@@ -381,23 +545,42 @@ class GroqAdaptiveClient:
             logger.error(f"[GROQ-ADAPTIVE] Connection failed: {e}")
             return False
 
-    async def send_audio(self, audio_data: bytes) -> None:
-        """Process audio chunk with semantic turn detection.
+    async def send_audio(self, audio_data: bytes, speaker: str = "interviewer") -> None:
+        """Process audio chunk with semantic turn detection and speaker awareness.
 
-        Flow:
+        Flow (Whisper/chunked mode):
         1. Transcribe immediately (~50-100ms) - fast feedback
         2. Send transcript to frontend for live display
-        3. Add to TurnDetector for accumulation
-        4. Check frontend VAD - only generate suggestion when speech actually ended
+        3. Track speaker and add to conversation history
+        4. For interviewer speech: add to TurnDetector for suggestion generation
+        5. For user speech: add to context only (no suggestion trigger)
+
+        Flow (Deepgram/streaming mode):
+        1. Forward audio bytes to Deepgram (non-blocking)
+        2. Deepgram callbacks handle transcript display and turn detection
         """
         if not self._connected:
             return
 
+        self._current_speaker = speaker
+
+        # Deepgram streaming: just forward audio, callbacks handle the rest
+        if self._deepgram_client:
+            if self._deepgram_segment_active:
+                self._segment_speaker_votes.append(speaker)
+            await self._deepgram_client.send_audio(audio_data)
+            return
+
         try:
-            # Transcribe with Groq Whisper (instant feedback)
+            # Whisper batch transcription
             transcript = await self._transcription_client.transcribe(audio_data)
 
             if not transcript or len(transcript.strip()) < 3:
+                return
+
+            # Filter out noise transcripts (Whisper hallucinations, single words, etc.)
+            if is_noise_transcript(transcript):
+                logger.debug(f"[GROQ-ADAPTIVE] Filtered noise transcript: '{transcript}'")
                 return
 
             # Merge with previous transcript (handle overlapping chunks)
@@ -412,7 +595,21 @@ class GroqAdaptiveClient:
                 "transcript": merged_transcript,
             })
 
-            # Use semantic turn detection if enabled
+            # Add to conversation history for LLM context (both speakers)
+            self._conversation_history.append({
+                "speaker": speaker,
+                "text": merged_transcript,
+            })
+            # Keep last 20 entries to avoid unbounded growth
+            if len(self._conversation_history) > 20:
+                self._conversation_history = self._conversation_history[-20:]
+
+            # Only accumulate interviewer speech for suggestion generation
+            if speaker == "user":
+                logger.debug(f"[GROQ-ADAPTIVE] User speech captured for context (not triggering suggestion): '{merged_transcript[:60]}...'")
+                return
+
+            # Use semantic turn detection if enabled (interviewer speech only)
             if self._turn_detector:
                 # Add to turn detector buffer
                 self._turn_detector.add_transcript(merged_transcript)
@@ -436,23 +633,43 @@ class GroqAdaptiveClient:
         except Exception as e:
             logger.error(f"[GROQ-ADAPTIVE] Error processing audio: {e}")
 
-    async def _on_turn_complete(self, complete_text: str) -> None:
-        """Called when TurnDetector identifies a complete speaker turn.
+    def _build_conversation_context(self) -> str:
+        """Build a conversation context string from recent history.
 
-        This is where we generate the AI suggestion, only after the
-        interviewer has finished speaking.
+        This gives the LLM context about what the user has already answered,
+        so it can provide relevant suggestions for follow-up questions.
         """
-        logger.info(f"[GROQ-ADAPTIVE] Turn complete: '{complete_text[:100]}...'")
+        if not self._conversation_history:
+            return ""
+
+        lines = []
+        for entry in self._conversation_history:
+            speaker_label = "Candidate" if entry["speaker"] == "user" else "Interviewer"
+            lines.append(f"{speaker_label}: {entry['text']}")
+
+        return "\n".join(lines)
+
+    async def _on_turn_complete(self, complete_text: str) -> None:
+        """Called when TurnDetector identifies a complete interviewer turn.
+
+        Generates AI suggestion with conversation context so the LLM knows
+        what the user has already said.
+        """
+        logger.info(f"[GROQ-ADAPTIVE] Turn complete (interviewer): '{complete_text[:100]}...'")
 
         # Reset transcript merging state for next turn
-        # This prevents words from question 1 being incorrectly detected
-        # as overlapping with question 2
         self._last_transcript = ""
         self._transcript_buffer = []
 
         try:
-            # Get suggestion from Groq Llama
-            suggestion_data = await self._llm_client.get_suggestion(complete_text)
+            # Build conversation context for the LLM
+            conversation_context = self._build_conversation_context()
+
+            # Get suggestion from Groq Llama (with conversation context)
+            suggestion_data = await self._llm_client.get_suggestion(
+                complete_text,
+                conversation_context=conversation_context,
+            )
 
             if suggestion_data and suggestion_data.get("is_question") and suggestion_data.get("suggestion"):
                 # Use the pre-formatted text if available
@@ -482,6 +699,84 @@ class GroqAdaptiveClient:
 
         except Exception as e:
             logger.error(f"[GROQ-ADAPTIVE] Error generating suggestion: {e}")
+
+    def _get_segment_speaker(self) -> str:
+        """Determine dominant speaker from accumulated votes since last final transcript.
+
+        Uses majority voting over all audio chunks received during this Deepgram segment.
+        This is more reliable than the instantaneous _current_speaker because it averages
+        over the entire segment rather than using a single point-in-time sample.
+        """
+        if not self._segment_speaker_votes:
+            return self._current_speaker
+
+        interviewer_count = self._segment_speaker_votes.count("interviewer")
+        user_count = self._segment_speaker_votes.count("user")
+        return "interviewer" if interviewer_count >= user_count else "user"
+
+    async def _on_deepgram_transcript(self, transcript: str, segment_id: str, is_final: bool) -> None:
+        """Called by Deepgram for each transcript result (interim or final)."""
+        if not transcript:
+            return
+
+        # Mark segment as active on first interim — starts accumulating speaker votes
+        if not self._deepgram_segment_active:
+            self._deepgram_segment_active = True
+            self._segment_speaker_votes = []  # Fresh votes for this segment
+
+        is_new_turn = self._deepgram_needs_new_turn and is_final
+        if is_new_turn:
+            self._deepgram_needs_new_turn = False
+
+        # Use majority-vote speaker for this segment instead of instantaneous _current_speaker
+        segment_speaker = self._get_segment_speaker()
+
+        # Send to frontend for display (update-or-add based on segment_id)
+        await self._message_queue.put({
+            "type": "conversation.item.input_audio_transcription.completed",
+            "transcript": transcript,
+            "segmentId": segment_id,
+            "isFinal": is_final,
+            "isNewTurn": is_new_turn,
+            "speaker": segment_speaker,
+        })
+
+        # Only accumulate final transcripts for LLM context
+        if is_final:
+            self._deepgram_turn_buffer += " " + transcript
+
+            # Add to conversation history
+            self._conversation_history.append({
+                "speaker": segment_speaker,
+                "text": transcript,
+            })
+            if len(self._conversation_history) > 20:
+                self._conversation_history = self._conversation_history[-20:]
+            # Segment complete — stop accumulating votes until next segment starts
+            self._deepgram_segment_active = False
+            self._segment_speaker_votes = []
+
+    async def _on_deepgram_utterance_end(self) -> None:
+        """Called by Deepgram when a complete utterance/turn is detected."""
+        self._deepgram_needs_new_turn = True  # Mark next transcript as new turn
+
+        complete_text = self._deepgram_turn_buffer.strip()
+        self._deepgram_turn_buffer = ""
+
+        if not complete_text:
+            return
+
+        # Note: We do NOT filter by speaker here. The energy-based speaker detection
+        # in the AudioWorklet is unreliable (mic picks up ambient noise, causing
+        # interviewer speech to be misclassified as "user" when system audio drops).
+        # Instead, we let _on_turn_complete → LLM decide if the text is a question.
+
+        if len(complete_text.split()) < settings.turn_min_words:
+            logger.debug(f"[GROQ-ADAPTIVE] Deepgram utterance too short: '{complete_text}'")
+            return
+
+        logger.info(f"[GROQ-ADAPTIVE] Deepgram utterance complete: '{complete_text[:100]}...'")
+        await self._on_turn_complete(complete_text)
 
     def _merge_transcript(self, new_transcript: str) -> str:
         """Merge overlapping transcripts to avoid word duplication.
@@ -548,6 +843,14 @@ class GroqAdaptiveClient:
         self._connected = False
         self._running = False
 
+        # Process remaining Deepgram turn buffer
+        if self._deepgram_client and self._deepgram_turn_buffer.strip():
+            remaining = self._deepgram_turn_buffer.strip()
+            self._deepgram_turn_buffer = ""
+            if remaining and len(remaining.split()) >= settings.turn_min_words:
+                logger.info(f"[GROQ-ADAPTIVE] Processing remaining Deepgram buffer: '{remaining[:50]}...'")
+                await self._on_turn_complete(remaining)
+
         # Stop turn detector and process any remaining turn
         if self._turn_detector:
             remaining = self._turn_detector.force_complete()
@@ -560,6 +863,8 @@ class GroqAdaptiveClient:
             stats = self._turn_detector.get_stats()
             logger.info(f"[GROQ-ADAPTIVE] Turn detector stats: {stats}")
 
+        if self._deepgram_client:
+            await self._deepgram_client.close()
         if self._transcription_client:
             await self._transcription_client.close()
         if self._llm_client:

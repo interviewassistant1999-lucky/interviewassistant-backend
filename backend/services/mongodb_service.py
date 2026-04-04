@@ -8,6 +8,7 @@ Provides:
 
 import logging
 import re
+import time
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
@@ -18,6 +19,11 @@ logger = logging.getLogger(__name__)
 # Global motor client singleton
 _mongo_client = None
 _mongo_db = None
+
+# In-memory cache for available questionnaires (rarely changes)
+_available_questionnaires_cache: Optional[List[Dict]] = None
+_available_questionnaires_cache_ts: float = 0
+_AVAILABLE_CACHE_TTL = 300  # 5 minutes
 
 
 async def init_mongodb() -> None:
@@ -40,6 +46,26 @@ async def init_mongodb() -> None:
         # Test connection
         await _mongo_client.admin.command("ping")
         logger.info(f"[MONGODB] Connected to {settings.mongodb_db_name}")
+
+        # Ensure indexes exist (idempotent — no-op if already created)
+        try:
+            questionnaires_col = _mongo_db["role_questionnaires"]
+            await questionnaires_col.create_index("role_type", unique=True)
+
+            responses_col = _mongo_db["questionnaire_responses"]
+            # Match the existing unique compound index from seed scripts
+            await responses_col.create_index(
+                [("user_id", 1), ("role_type", 1)], unique=True
+            )
+            await responses_col.create_index("user_id")
+            optimized_col = _mongo_db["optimized_profiles"]
+            await optimized_col.create_index(
+                [("user_id", 1), ("role_type", 1)], unique=True
+            )
+
+            logger.info("[MONGODB] Indexes ensured on startup")
+        except Exception as idx_err:
+            logger.warning(f"[MONGODB] Index creation failed (non-fatal): {idx_err}")
     except Exception as e:
         logger.warning(f"[MONGODB] Failed to connect: {e} - question bank disabled")
         _mongo_client = None
@@ -169,7 +195,7 @@ async def fetch_likely_questions(
     Returns:
         Dict with tiers: {"must_ask": [...], "high_probability": [...], "stretch": [...]}
     """
-    if not _mongo_db:
+    if _mongo_db is None:
         logger.info("[MONGODB] Not connected - returning empty questions")
         return {"must_ask": [], "high_probability": [], "stretch": []}
 
@@ -260,3 +286,351 @@ async def fetch_likely_questions(
     except Exception as e:
         logger.error(f"[MONGODB] Error fetching questions: {e}")
         return {"must_ask": [], "high_probability": [], "stretch": []}
+
+
+# === Questionnaire Functions ===
+
+
+async def get_questionnaire(role_type: str) -> Optional[Dict]:
+    """Fetch the questionnaire template for a role.
+
+    Args:
+        role_type: e.g. 'technical_program_manager'
+
+    Returns:
+        Questionnaire document or None if not found.
+    """
+    if _mongo_db is None:
+        logger.info("[MONGODB] Not connected - cannot fetch questionnaire")
+        return None
+
+    try:
+        collection = _mongo_db["role_questionnaires"]
+        doc = await collection.find_one(
+            {"role_type": role_type},
+            {"_id": 0},  # Exclude MongoDB ObjectId
+        )
+        if doc:
+            logger.info(f"[MONGODB] Questionnaire found for {role_type}: {doc.get('total_questions', 0)} questions")
+        else:
+            logger.info(f"[MONGODB] No questionnaire found for {role_type}")
+        return doc
+    except Exception as e:
+        logger.error(f"[MONGODB] Error fetching questionnaire: {e}")
+        return None
+
+
+async def get_available_questionnaires() -> List[Dict]:
+    """Get list of all available questionnaire roles with metadata.
+
+    Returns cached result (TTL 5 min) since this data rarely changes.
+
+    Returns:
+        List of {role_type, title, total_questions, version}.
+    """
+    global _available_questionnaires_cache, _available_questionnaires_cache_ts
+
+    if _mongo_db is None:
+        return []
+
+    # Return cached result if still fresh
+    if (
+        _available_questionnaires_cache is not None
+        and (time.monotonic() - _available_questionnaires_cache_ts) < _AVAILABLE_CACHE_TTL
+    ):
+        return _available_questionnaires_cache
+
+    try:
+        collection = _mongo_db["role_questionnaires"]
+        cursor = collection.find(
+            {},
+            {"_id": 0, "role_type": 1, "title": 1, "total_questions": 1, "version": 1, "description": 1},
+        )
+        result = await cursor.to_list(length=50)
+        _available_questionnaires_cache = result
+        _available_questionnaires_cache_ts = time.monotonic()
+        return result
+    except Exception as e:
+        logger.error(f"[MONGODB] Error listing questionnaires: {e}")
+        return []
+
+
+async def get_user_responses(user_id: str, role_type: str) -> Optional[Dict]:
+    """Fetch user's questionnaire responses for a role.
+
+    Args:
+        user_id: User UUID string
+        role_type: Role type string
+
+    Returns:
+        Response document or None if not started.
+    """
+    if _mongo_db is None:
+        return None
+
+    try:
+        collection = _mongo_db["questionnaire_responses"]
+        doc = await collection.find_one(
+            {"user_id": user_id, "role_type": role_type},
+            {"_id": 0},
+        )
+        if doc:
+            logger.info(
+                f"[MONGODB] Responses found for user {user_id[:8]}... role {role_type}: "
+                f"{doc.get('answered_count', 0)}/{doc.get('total_questions', 0)}"
+            )
+        return doc
+    except Exception as e:
+        logger.error(f"[MONGODB] Error fetching responses: {e}")
+        return None
+
+
+async def save_user_responses(
+    user_id: str,
+    role_type: str,
+    answers: Dict[str, Any],
+    total_questions: int,
+) -> Dict:
+    """Save or update user's questionnaire answers.
+
+    Uses upsert pattern - creates new doc if first save, updates if exists.
+
+    Args:
+        user_id: User UUID string
+        role_type: Role type string
+        answers: Dict of question_id -> {answer_text, last_updated}
+        total_questions: Total questions in the questionnaire
+
+    Returns:
+        Updated response summary.
+    """
+    if _mongo_db is None:
+        raise RuntimeError("MongoDB not connected")
+
+    try:
+        collection = _mongo_db["questionnaire_responses"]
+        now = datetime.utcnow()
+
+        # Count non-empty answers
+        answered_count = sum(
+            1 for a in answers.values()
+            if a.get("answer_text", "").strip()
+        )
+
+        # Upsert: create or update
+        result = await collection.update_one(
+            {"user_id": user_id, "role_type": role_type},
+            {
+                "$set": {
+                    "answers": answers,
+                    "answered_count": answered_count,
+                    "total_questions": total_questions,
+                    "last_saved_at": now,
+                },
+                "$setOnInsert": {
+                    "user_id": user_id,
+                    "role_type": role_type,
+                    "questionnaire_version": 1,
+                    "status": "in_progress",
+                    "confidence_score": None,
+                    "evaluation_result": None,
+                    "follow_up_questions": [],
+                    "follow_up_answers": {},
+                    "started_at": now,
+                    "submitted_at": None,
+                    "evaluated_at": None,
+                },
+            },
+            upsert=True,
+        )
+
+        logger.info(
+            f"[MONGODB] Saved responses for user {user_id[:8]}... role {role_type}: "
+            f"{answered_count}/{total_questions} answered"
+        )
+
+        return {
+            "status": "saved",
+            "answered_count": answered_count,
+            "total_questions": total_questions,
+            "last_saved_at": now.isoformat(),
+        }
+    except Exception as e:
+        logger.error(f"[MONGODB] Error saving responses: {e}")
+        raise
+
+
+async def submit_questionnaire(user_id: str, role_type: str) -> Dict:
+    """Mark questionnaire as completed/submitted for evaluation.
+
+    Args:
+        user_id: User UUID string
+        role_type: Role type string
+
+    Returns:
+        Updated status.
+    """
+    if _mongo_db is None:
+        raise RuntimeError("MongoDB not connected")
+
+    try:
+        collection = _mongo_db["questionnaire_responses"]
+        now = datetime.utcnow()
+
+        result = await collection.update_one(
+            {"user_id": user_id, "role_type": role_type},
+            {
+                "$set": {
+                    "status": "completed",
+                    "submitted_at": now,
+                },
+            },
+        )
+
+        if result.matched_count == 0:
+            return {"error": "No responses found to submit"}
+
+        logger.info(f"[MONGODB] Questionnaire submitted for user {user_id[:8]}... role {role_type}")
+        return {"status": "completed", "submitted_at": now.isoformat()}
+    except Exception as e:
+        logger.error(f"[MONGODB] Error submitting questionnaire: {e}")
+        raise
+
+
+async def save_evaluation_result(
+    user_id: str,
+    role_type: str,
+    confidence_score: float,
+    evaluation_result: Dict,
+    follow_up_questions: List[Dict],
+) -> Dict:
+    """Save AI evaluation result for a questionnaire.
+
+    Args:
+        user_id: User UUID string
+        role_type: Role type string
+        confidence_score: 0-100 confidence percentage
+        evaluation_result: Full evaluation details (strengths, gaps, etc.)
+        follow_up_questions: List of follow-up questions if confidence < 70%
+
+    Returns:
+        Updated status.
+    """
+    if _mongo_db is None:
+        raise RuntimeError("MongoDB not connected")
+
+    try:
+        collection = _mongo_db["questionnaire_responses"]
+        now = datetime.utcnow()
+
+        status = "evaluated" if confidence_score >= 70 else "needs_follow_up"
+
+        result = await collection.update_one(
+            {"user_id": user_id, "role_type": role_type},
+            {
+                "$set": {
+                    "confidence_score": confidence_score,
+                    "evaluation_result": evaluation_result,
+                    "follow_up_questions": follow_up_questions,
+                    "status": status,
+                    "evaluated_at": now,
+                },
+            },
+        )
+
+        logger.info(
+            f"[MONGODB] Evaluation saved for user {user_id[:8]}... role {role_type}: "
+            f"confidence={confidence_score}%, status={status}"
+        )
+
+        return {
+            "status": status,
+            "confidence_score": confidence_score,
+            "evaluated_at": now.isoformat(),
+        }
+    except Exception as e:
+        logger.error(f"[MONGODB] Error saving evaluation: {e}")
+        raise
+
+
+async def save_follow_up_answers(
+    user_id: str,
+    role_type: str,
+    follow_up_answers: Dict[str, str],
+) -> Dict:
+    """Save answers to follow-up questions.
+
+    Args:
+        user_id: User UUID string
+        role_type: Role type string
+        follow_up_answers: Dict of follow_up_id -> answer_text
+
+    Returns:
+        Updated response summary.
+    """
+    if _mongo_db is None:
+        raise RuntimeError("MongoDB not connected")
+
+    try:
+        collection = _mongo_db["questionnaire_responses"]
+        now = datetime.utcnow()
+
+        result = await collection.update_one(
+            {"user_id": user_id, "role_type": role_type},
+            {
+                "$set": {
+                    "follow_up_answers": follow_up_answers,
+                    "status": "completed",
+                    "last_saved_at": now,
+                },
+            },
+        )
+
+        logger.info(
+            f"[MONGODB] Follow-up answers saved for user {user_id[:8]}... role {role_type}: "
+            f"{len(follow_up_answers)} answers"
+        )
+
+        return {
+            "status": "saved",
+            "follow_up_count": len(follow_up_answers),
+        }
+    except Exception as e:
+        logger.error(f"[MONGODB] Error saving follow-up answers: {e}")
+        raise
+
+
+async def get_all_user_progress(user_id: str) -> List[Dict]:
+    """Get questionnaire progress for all roles for a user.
+
+    Returns:
+        List of {role_type, status, answered_count, total_questions, confidence_score}.
+    """
+    if _mongo_db is None:
+        return []
+
+    try:
+        collection = _mongo_db["questionnaire_responses"]
+        cursor = collection.find(
+            {"user_id": user_id},
+            {
+                "_id": 0,
+                "role_type": 1,
+                "status": 1,
+                "answered_count": 1,
+                "total_questions": 1,
+                "confidence_score": 1,
+                "last_saved_at": 1,
+            },
+        )
+        results = await cursor.to_list(length=50)
+
+        # Convert datetime fields to ISO strings for JSON serialization
+        for r in results:
+            if r.get("last_saved_at"):
+                r["last_saved_at"] = r["last_saved_at"].isoformat()
+
+        return results
+    except Exception as e:
+        logger.error(f"[MONGODB] Error fetching user progress: {e}")
+        return []
