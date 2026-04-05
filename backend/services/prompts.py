@@ -1255,14 +1255,14 @@ Automatically detect the interview type and apply the appropriate framework:
 
 **ANSWER FLOW:**
 
-**Step 1: Scope & Context (30 seconds)**
+**Step 1: Scope & Context (Important)**
 - Define the program clearly
 - State assumptions:
   - "Assuming this is a 6-month, cross-functional effort..."
   - "Working with 3 engineering teams, design, and product..."
   - "Target launch: Q3, with beta in Q2..."
 
-**Step 2: High-Level Timeline (45 seconds)**
+**Step 2: High-Level Timeline (Critical)**
 
 Show visual timeline:
 ```
@@ -1278,7 +1278,7 @@ Q1          Q2          Q3          Q4
 - **Phase 2 (Months 3-4):** Development, integration, beta testing
 - **Phase 3 (Months 5-6):** Launch, monitoring, iteration
 
-**Step 3: Stakeholder Identification (45 seconds)**
+**Step 3: Stakeholder Identification (Critical)**
 
 RACI Matrix:
 ```
@@ -1291,7 +1291,7 @@ Exec Sponsor       Informed     Weekly updates
 Legal/Security     Consulted    Compliance review
 ```
 
-**Step 4: Critical Path Analysis (60 seconds)**
+**Step 4: Critical Path Analysis (Critical)**
 
 Identify dependencies:
 ```
@@ -1311,7 +1311,7 @@ Design → User Research → Iteration
 - **Parallel work:** Design, documentation, marketing prep
 - **Buffer:** Built in 2-week buffer before launch
 
-**Step 5: Risk Mitigation (60 seconds)**
+**Step 5: Risk Mitigation (Critical)**
 
 Top 3 risks with mitigation:
 
@@ -1330,7 +1330,7 @@ Top 3 risks with mitigation:
   - Impact: High
   - Mitigation: Evaluate alternatives, contractual SLAs, fallback plan
 
-**Step 6: Success Metrics (30 seconds)**
+**Step 6: Success Metrics (Important)**
 
 Define measurement:
 - **Launch metrics:** On-time delivery, zero critical bugs
@@ -1338,7 +1338,7 @@ Define measurement:
 - **Business metrics:** 20% increase in engagement
 - **Quality metrics:** < 1% error rate
 
-**Step 7: Communication Plan (30 seconds)**
+**Step 7: Communication Plan (Optional)**
 
 Cadence:
 - **Daily:** Standup with core team (15 min)
@@ -1357,12 +1357,12 @@ VISUAL AIDS TO INCLUDE:
 
 **ANSWER FLOW:**
 
-**Step 1: Technical Understanding (30 seconds)**
+**Step 1: Technical Understanding (Important)**
 - Demonstrate you understand the technical concepts
 - Use correct terminology but explain for business audience
 - "Let me explain the architecture at a high level..."
 
-**Step 2: System Architecture (60 seconds)**
+**Step 2: System Architecture (Critical)**
 
 Include ASCII diagram:
 ```
@@ -1385,7 +1385,7 @@ Include ASCII diagram:
 - **Data flow:** [Walk through request path]
 - **Scalability approach:** [How it handles load]
 
-**Step 3: Technical Tradeoffs (60 seconds)**
+**Step 3: Technical Tradeoffs (Critical)**
 
 Present options with business context:
 
@@ -1403,7 +1403,7 @@ Present options with business context:
 
 **Recommendation:** "I'd choose Option A because long-term velocity matters more than 2-month delay, and we're planning 5+ years of growth."
 
-**Step 4: Make vs Buy Analysis (45 seconds)**
+**Step 4: Make vs Buy Analysis (Important)**
 
 **Build in-house:**
   - Cost: $500k (eng time) + $100k/yr maintenance
@@ -1419,7 +1419,7 @@ Present options with business context:
 
 **Decision framework:** "Build if core differentiator, buy if commodity feature."
 
-**Step 5: Technical Risks (30 seconds)**
+**Step 5: Technical Risks (Optional)**
 
 Identify technical risks:
 - **Performance:** Load testing before launch
@@ -1438,7 +1438,7 @@ ALWAYS INCLUDE:
 
 **ANSWER FLOW:**
 
-**Step 1: Stakeholder Mapping (30 seconds)**
+**Step 1: Stakeholder Mapping (Important)**
 
 Identify stakeholders and their interests:
 ```
@@ -1453,7 +1453,7 @@ Low Power, High Interest     │  Low Power, Low Interest
 - Key customer contacts     │  • Observers
 ```
 
-**Step 2: Communication Strategy (45 seconds)**
+**Step 2: Communication Strategy (Critical)**
 
 Tailor message to audience:
 
@@ -1475,7 +1475,7 @@ Tailor message to audience:
   - Cadence: Weekly syncs, sprint reviews
   - Example: "Users can now complete checkout in 2 clicks"
 
-**Step 3: Conflict Resolution (60 seconds)**
+**Step 3: Conflict Resolution (Critical)**
 
 When stakeholders disagree:
 
@@ -1498,7 +1498,7 @@ When stakeholders disagree:
    - How: Present options clearly with your recommendation
    - To whom: Common manager or exec sponsor
 
-**Step 4: Managing Up (45 seconds)**
+**Step 4: Managing Up (Important)**
 
 When communicating with executives:
 
@@ -1514,7 +1514,7 @@ When communicating with executives:
   - "Risk: Third-party API delay. Mitigation: Built fallback solution"
   - "Need: Your approval on $50k additional budget for X"
 
-**Step 5: Building Trust (30 seconds)**
+**Step 5: Building Trust (Optional)**
 
 Key behaviors:
 - **Transparency:** Share risks early, not at deadline
@@ -1528,7 +1528,7 @@ Key behaviors:
 
 **ANSWER FLOW:**
 
-**Step 1: Define Success Metrics (45 seconds)**
+**Step 1: Define Success Metrics (Critical)**
 
 Use a metrics hierarchy:
 
@@ -1549,7 +1549,7 @@ Use a metrics hierarchy:
   - Churn rate: "< 5%"
   - Revenue impact: "No drop in conversions"
 
-**Step 2: Measurement Plan (45 seconds)**
+**Step 2: Measurement Plan (Important)**
 
 How to track:
 ```
@@ -1561,7 +1561,7 @@ NPS             Survey       Weekly       PM
 Revenue         Dashboard    Daily        Business
 ```
 
-**Step 3: Data-Driven Prioritization (60 seconds)**
+**Step 3: Data-Driven Prioritization (Critical)**
 
 Framework for making decisions:
 
@@ -1578,7 +1578,7 @@ Feature C         20k    1       70%        3mo      4.7
 
 **Recommendation:** "Prioritize Feature A - highest score, balances reach and impact."
 
-**Step 4: ROI Analysis (60 seconds)**
+**Step 4: ROI Analysis (Critical)**
 
 Business case structure:
 
@@ -1600,7 +1600,7 @@ Business case structure:
 
 **Decision:** "Strong ROI justifies investment. Recommend proceed."
 
-**Step 5: A/B Testing Strategy (30 seconds)**
+**Step 5: A/B Testing Strategy (Optional)**
 
 When to use data to validate:
 - **Hypothesis:** "Adding social proof increases conversions"
@@ -1619,14 +1619,14 @@ ALWAYS INCLUDE:
 
 **ANSWER FLOW:**
 
-**Step 1: Current State Assessment (30 seconds)**
+**Step 1: Current State Assessment (Important)**
 - Identify the problem clearly
 - Quantify the impact:
   - "Current process takes 2 weeks per release"
   - "Causing 30% of launches to slip"
   - "Costing $500k/year in delays"
 
-**Step 2: Process Design (60 seconds)**
+**Step 2: Process Design (Critical)**
 
 Show before/after:
 
@@ -1649,7 +1649,7 @@ Total: 3 days per release
   - Higher quality (automated testing catches 80% of bugs)
   - Lower risk (canary deployment)
 
-**Step 3: Implementation Plan (60 seconds)**
+**Step 3: Implementation Plan (Critical)**
 
 Phased rollout:
 
@@ -1668,7 +1668,7 @@ Phased rollout:
   - Add monitoring and alerting
   - Document runbooks
 
-**Step 4: Change Management (45 seconds)**
+**Step 4: Change Management (Important)**
 
 Getting team buy-in:
 
@@ -1682,7 +1682,7 @@ Getting team buy-in:
   - QA: Start with high-value test automation, keep manual for edge cases
   - Management: ROI analysis showing 6-month payback
 
-**Step 5: Measuring Success (30 seconds)**
+**Step 5: Measuring Success (Optional)**
 
 Define KPIs for the new process:
 - **Velocity:** Release frequency (2x → 4x per quarter)
@@ -1690,7 +1690,7 @@ Define KPIs for the new process:
 - **Efficiency:** Engineering time saved (20 hours/week)
 - **Adoption:** All teams using new process (100%)
 
-**Step 6: Strategic Thinking (60 seconds)**
+**Step 6: Strategic Thinking (Critical)**
 
 Long-term vision:
 
@@ -1714,7 +1714,7 @@ Long-term vision:
 
 **ANSWER FLOW:**
 
-**Step 1: Risk Identification (30 seconds)**
+**Step 1: Risk Identification (Important)**
 
 Categories of risk:
 - **Technical:** Performance, security, scalability
@@ -1723,7 +1723,7 @@ Categories of risk:
 - **External:** Vendor issues, regulatory changes
 - **People:** Key person departure, team conflicts
 
-**Step 2: Risk Assessment Matrix (45 seconds)**
+**Step 2: Risk Assessment Matrix (Critical)**
 
 Prioritize risks:
 ```
@@ -1742,7 +1742,7 @@ Prioritize risks:
 
 **Top risks to focus on:** High impact + High probability (Risk A)
 
-**Step 3: Risk Mitigation Strategy (60 seconds)**
+**Step 3: Risk Mitigation Strategy (Critical)**
 
 For each top risk:
 
@@ -1759,7 +1759,7 @@ For each top risk:
   **Owner:** Engineering Lead
   **Review:** Weekly in risk review meeting
 
-**Step 4: Crisis Response Plan (60 seconds)**
+**Step 4: Crisis Response Plan (Critical)**
 
 When crisis hits:
 
@@ -1782,7 +1782,7 @@ Time    Action
 1:00    Postmortem scheduled
 ```
 
-**Step 5: Postmortem Process (30 seconds)**
+**Step 5: Postmortem Process (Optional)**
 
 After crisis resolved:
 
@@ -1797,7 +1797,7 @@ After crisis resolved:
   - Track completion in next 30 days
   - Update runbooks
 
-**Step 6: Contingency Planning (45 seconds)**
+**Step 6: Contingency Planning (Important)**
 
 Build backup plans:
 
@@ -1820,20 +1820,20 @@ ALWAYS INCLUDE:
 7️⃣ BEHAVIORAL/LEADERSHIP FRAMEWORK (STAR METHOD)
 ═══════════════════════════════════════════════════════════════════════════════
 
-**ANSWER STRUCTURE (Total: 90-120 seconds)**
+**ANSWER STRUCTURE**
 
-**Situation (15 seconds)**
+**Situation (Important)**
 - Set the context with program/business context
 - Include scale and complexity
 - "I was leading a cross-org initiative with 5 teams..."
 
-**Task (15 seconds)**
+**Task (Important)**
 - Your specific responsibility as TPM
 - The challenge or goal
 - Business impact
 - "My role was to coordinate the launch while managing exec expectations..."
 
-**Action (50 seconds) ← MOST IMPORTANT**
+**Action (Critical) ← MOST IMPORTANT**
 - What YOU specifically did (use "I" not "we")
 - Show TPM skills:
   - **Program management:** Planning, execution, delivery
@@ -1847,7 +1847,7 @@ Break into sub-bullets:
   - "When we encountered risk X, I..."
   - "I influenced the team by..."
 
-**Result (25 seconds)**
+**Result (Important)**
 - Quantified outcome
   - "Launched on time with 95% feature completeness"
   - "Saved $500k by identifying scope reduction opportunity"
@@ -2053,7 +2053,7 @@ Automatically detect the interview type and apply the appropriate framework:
 
 **ANSWER FLOW:**
 
-**Step 1: Clarify Requirements (30 seconds)**
+**Step 1: Clarify Requirements (Important)**
 - State assumptions clearly and proceed
 - Don't wait for confirmation on every detail
 - Cover:
@@ -2061,7 +2061,7 @@ Automatically detect the interview type and apply the appropriate framework:
   - Latency: "Target sub-200ms response time..."
   - Scope: "Focusing on core feed generation, not moderation..."
 
-**Step 2: High-Level Architecture (60 seconds)**
+**Step 2: High-Level Architecture (Critical)**
 - Start with ASCII diagram showing main components
 - Separate Write Path and Read Path
 - Label data flow clearly
@@ -2080,7 +2080,7 @@ Example format:
                  └──────────┘      └─────────┘
 ```
 
-**Step 3: Core Architectural Choice (45 seconds)**
+**Step 3: Core Architectural Choice (Critical)**
 - Present 2-3 competing approaches
 - Structure each as:
   - **Approach 1 (Name):**
@@ -2090,7 +2090,7 @@ Example format:
   
 - State your choice: "I'd use hybrid approach because..."
 
-**Step 4: Deep Dive - Write Path (60 seconds)**
+**Step 4: Deep Dive - Write Path (Critical)**
 - Number the steps clearly:
   1. User posts → API Gateway receives
   2. Write to Post DB (sharded by user_id)
@@ -2100,7 +2100,7 @@ Example format:
 
 - Add ASCII diagram if helpful
 
-**Step 5: Deep Dive - Read Path (60 seconds)**
+**Step 5: Deep Dive - Read Path (Critical)**
 - Number the steps:
   1. User requests feed → API Gateway
   2. Check Feed Cache (Redis) - 80% cache hit
@@ -2108,7 +2108,7 @@ Example format:
   4. Rank/sort results
   5. Return top N items
 
-**Step 6: Scaling Strategy (90 seconds)**
+**Step 6: Scaling Strategy (Critical)**
 - **Partitioning:**
   - "Shard Post DB by user_id for write locality"
   - "Partition Feed Cache by user_id for even distribution"
@@ -2123,7 +2123,7 @@ Example format:
   - "With batching → ~50k Redis ops/sec per node"
   - "Need ~100 Redis nodes for writes"
 
-**Step 7: Edge Cases & Tradeoffs (60 seconds)**
+**Step 7: Edge Cases & Tradeoffs (Important)**
 - **Hot keys / celebrities:**
   - "Switch to pull model for users > 100k followers"
   - "Cache their recent posts separately"
@@ -2136,7 +2136,7 @@ Example format:
   - "Dead letter queue for failed fan-outs"
   - "Retry with exponential backoff"
 
-**Step 8: Quick Iteration Plan (30 seconds)**
+**Step 8: Quick Iteration Plan (Optional)**
 - **V1:** Simple fan-out-on-write, chronological
 - **V2:** Add hybrid model for celebrities
 - **V3:** Introduce ranking algorithm
@@ -2155,7 +2155,7 @@ IMPORTANT ASCII DIAGRAM GUIDELINES:
 
 **ANSWER FLOW:**
 
-**Step 1: Understand the Problem (30 seconds)**
+**Step 1: Understand the Problem (Important)**
 - Restate in your own words
 - Confirm:
   - Input format and constraints
@@ -2163,13 +2163,13 @@ IMPORTANT ASCII DIAGRAM GUIDELINES:
   - Edge cases: "What about empty input? Duplicates?"
 - "Let me confirm my understanding..."
 
-**Step 2: Walk Through Example (30 seconds)**
+**Step 2: Walk Through Example (Important)**
 - Pick a simple example
 - Trace through manually
 - Include one edge case
 - "Let me trace through [2,7,11,15], target=9..."
 
-**Step 3: Discuss Approaches (60 seconds)**
+**Step 3: Discuss Approaches (Critical)**
 - Structure each approach:
 
 **Approach 1 - Brute Force:**
@@ -2195,7 +2195,7 @@ IMPORTANT ASCII DIAGRAM GUIDELINES:
 - Use clean variable names
 - Add comments for tricky logic
 
-**Step 5: Test & Verify (45 seconds)**
+**Step 5: Test & Verify (Important)**
 - Walk through your code with test case
 - Check edge cases:
   - Empty input
@@ -2203,7 +2203,7 @@ IMPORTANT ASCII DIAGRAM GUIDELINES:
   - All same values
   - Max constraints
 
-**Step 6: Complexity Analysis (15 seconds)**
+**Step 6: Complexity Analysis (Optional)**
 - **Time Complexity:** O(n) - "Single pass through array"
 - **Space Complexity:** O(n) - "Worst case store all elements"
 
@@ -2221,14 +2221,14 @@ COMMON PATTERNS TO MENTION:
 
 **ANSWER FLOW:**
 
-**Step 1: Clarify Requirements (45 seconds)**
+**Step 1: Clarify Requirements (Important)**
 - Identify use cases
 - Ask about:
   - Scale and extensibility needs
   - Performance requirements
   - Specific constraints
 
-**Step 2: Identify Core Entities (60 seconds)**
+**Step 2: Identify Core Entities (Critical)**
 - List main classes (think nouns)
 - Show relationships with ASCII diagram:
 ```
@@ -2248,7 +2248,7 @@ COMMON PATTERNS TO MENTION:
 └─────────────┘        └─────────────┘
 ```
 
-**Step 3: Define Class Structure (90 seconds)**
+**Step 3: Define Class Structure (Critical)**
 
 For each major class:
 
@@ -2270,7 +2270,7 @@ For each major class:
     - `assignVehicle(vehicle)`
     - `removeVehicle()`
 
-**Step 4: Apply Design Principles (60 seconds)**
+**Step 4: Apply Design Principles (Critical)**
 
 - **Single Responsibility:**
   - "Each class has one clear job"
@@ -2284,7 +2284,7 @@ For each major class:
   - **Factory Pattern:** For creating vehicle objects
   - **Observer Pattern:** For notifying when spots available
 
-**Step 5: Show Key Interactions (45 seconds)**
+**Step 5: Show Key Interactions (Important)**
 
 Sequence for parking:
 ```
@@ -2297,7 +2297,7 @@ ParkingSpot.assignVehicle()
 Return Ticket
 ```
 
-**Step 6: Discuss Extensibility (30 seconds)**
+**Step 6: Discuss Extensibility (Optional)**
 
 - **Adding EV charging spots:**
   - "Create ChargingSpot extends ParkingSpot"
@@ -2316,20 +2316,20 @@ ALWAYS INCLUDE:
 4️⃣ BEHAVIORAL FRAMEWORK (STAR METHOD)
 ═══════════════════════════════════════════════════════════════════════════════
 
-**ANSWER STRUCTURE (Total: 90-120 seconds)**
+**ANSWER STRUCTURE**
 
-**Situation (15 seconds)**
+**Situation (Important)**
 - Set the context briefly
 - "At my last company, we were building a payment system..."
 - "The team was 5 engineers, tight deadline..."
 
-**Task (15 seconds)**
+**Task (Important)**
 - Your specific responsibility
 - The challenge or goal
 - "I was responsible for the API integration..."
 - "The challenge was migrating without downtime..."
 
-**Action (50 seconds) ← MOST IMPORTANT**
+**Action (Critical) ← MOST IMPORTANT**
 - What YOU specifically did (use "I" not "we")
 - Break into sub-bullets:
   - "First, I analyzed the current system and identified..."
@@ -2337,7 +2337,7 @@ ALWAYS INCLUDE:
   - "I worked with the team to..."
   - "When we hit a blocker with X, I..."
 
-**Result (25 seconds)**
+**Result (Important)**
 - Quantified outcome
 - "Reduced API latency by 40%"
 - "Zero downtime during migration"
@@ -2370,17 +2370,17 @@ ALWAYS INCLUDE:
 
 **ANSWER FLOW:**
 
-**Step 1: Clarify Scope (15 seconds)**
+**Step 1: Clarify Scope (Important)**
 - "Are we talking about read optimization or write?"
 - "Assume Postgres or NoSQL?"
 
-**Step 2: Explain the Concept (45 seconds)**
+**Step 2: Explain the Concept (Critical)**
 - Start high-level
 - Then drill into details
 - Use analogy if helpful:
   - "An index is like a book's table of contents..."
 
-**Step 3: Discuss Tradeoffs (60 seconds)**
+**Step 3: Discuss Tradeoffs (Critical)**
 
 Every technical decision has tradeoffs:
 
@@ -2394,13 +2394,13 @@ Every technical decision has tradeoffs:
   - **Con:** No range queries, no sorting
   - **When to use:** Point lookups only (id=123)
 
-**Step 4: Real-World Context (30 seconds)**
+**Step 4: Real-World Context (Important)**
 - Share production experience
 - "I've seen cases where..."
 - Common pitfalls
 - "One gotcha is..."
 
-**Step 5: How to Debug/Verify (20 seconds)**
+**Step 5: How to Debug/Verify (Optional)**
 - Tools to use
 - "I'd run EXPLAIN ANALYZE to check..."
 - "Monitor query time with..."

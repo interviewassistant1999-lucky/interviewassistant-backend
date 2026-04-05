@@ -39,6 +39,7 @@ ANTHROPIC_VERSION = "2023-06-01"
 
 # Models
 CLAUDE_MODEL = "claude-sonnet-4-6"
+#CLAUDE_MODEL = "claude-haiku-4-5-20251001"
 
 
 class AnthropicLLMClient:
